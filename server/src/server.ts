@@ -55,9 +55,8 @@ const isCrossOriginDeployment = (() => {
     return false;
   }
 })();
-const sessionCookieSameSite = (
-  process.env.NODE_ENV === 'production' && isCrossOriginDeployment ? 'none' : 'lax'
-) as const;
+const sessionCookieSameSite: 'none' | 'lax' =
+  process.env.NODE_ENV === 'production' && isCrossOriginDeployment ? 'none' : 'lax';
 
 const CORS_CONFIG = {
   origin: normalizeOrigin(process.env.PUBLIC_URL),

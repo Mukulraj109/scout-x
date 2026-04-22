@@ -29,7 +29,7 @@ const isCrossOriginDeployment = (() => {
     return false;
   }
 })();
-const cookieSameSite = (IS_PRODUCTION && isCrossOriginDeployment ? 'none' : 'lax') as const;
+const cookieSameSite: 'none' | 'lax' = IS_PRODUCTION && isCrossOriginDeployment ? 'none' : 'lax';
 
 /** JWT session cookie for the web app (`requireSignIn`). */
 const jwtCookieOptions = {
