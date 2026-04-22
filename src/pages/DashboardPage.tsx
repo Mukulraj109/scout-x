@@ -94,6 +94,20 @@ export const DashboardPage = () => {
   const [stoppingAll, setStoppingAll] = useState(false);
   const [resumeAllOpen, setResumeAllOpen] = useState(false);
   const [resumingAll, setResumingAll] = useState(false);
+  const [copiedTargetUrl, setCopiedTargetUrl] = useState<string | null>(null);
+
+  const copyTargetUrl = useCallback(async (url?: string) => {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedTargetUrl(url);
+      window.setTimeout(() => {
+        setCopiedTargetUrl((current) => (current === url ? null : current));
+      }, 1500);
+    } catch {
+      setCopiedTargetUrl(null);
+    }
+  }, []);
 
   const activeScheduledCount = useMemo(
     () => automations.filter((a) => a.schedule?.enabled && (a.schedule?.cron || (a.schedule as any)?.every)).length,
@@ -468,8 +482,40 @@ export const DashboardPage = () => {
             {(isLoading ? [] : automations).map((automation) => (
               <TableRow key={automation.id} hover>
                 <TableCell sx={{ fontWeight: 500 }}>{automation.name}</TableCell>
-                <TableCell sx={{ maxWidth: 280, wordBreak: 'break-all', fontSize: 12, color: 'text.secondary' }}>
-                  {automation.targetUrl || '-'}
+                <TableCell sx={{ maxWidth: 280, fontSize: 12, color: 'text.secondary' }}>
+                  {automation.targetUrl ? (
+                    <Tooltip
+                      title={
+                        copiedTargetUrl === automation.targetUrl
+                          ? 'Copied'
+                          : `${automation.targetUrl} (click to copy)`
+                      }
+                      arrow
+                    >
+                      <Box
+                        component="button"
+                        type="button"
+                        onClick={() => copyTargetUrl(automation.targetUrl)}
+                        sx={{
+                          maxWidth: '100%',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          display: 'block',
+                          border: 'none',
+                          background: 'transparent',
+                          padding: 0,
+                          margin: 0,
+                          color: 'inherit',
+                          textAlign: 'left',
+                          cursor: 'copy',
+                          fontSize: 12,
+                        }}
+                      >
+                        {automation.targetUrl}
+                      </Box>
+                    </Tooltip>
+                  ) : '-'}
                 </TableCell>
                 <TableCell sx={{ fontSize: 13 }}>{automation.lastRunTime || 'Never'}</TableCell>
                 <TableCell>{automation.rowsExtracted || 0}</TableCell>
