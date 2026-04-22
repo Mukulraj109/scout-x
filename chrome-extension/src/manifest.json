@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "Scout-X Scrapper",
+  "version": "1.0.0",
+  "description": "Visual web scraping: extract lists, tables, and text from any page. Scout-X Scrapper.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "sidePanel",
+    "downloads",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "action": {
+    "default_title": "Scout-X Scrapper",
+    "default_icon": {
+      "16": "src/public/icons/scoutx-logo.png",
+      "32": "src/public/icons/scoutx-logo.png",
+      "48": "src/public/icons/scoutx-logo.png",
+      "128": "src/public/icons/scoutx-logo.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["src/content/index.ts"],
+      "css": ["src/content/content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "icons": {
+    "16": "src/public/icons/scoutx-logo.png",
+    "32": "src/public/icons/scoutx-logo.png",
+    "48": "src/public/icons/scoutx-logo.png",
+    "128": "src/public/icons/scoutx-logo.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/datatable/index.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

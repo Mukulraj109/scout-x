@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maxun Visual Selector</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        width: 380px;
+        background: #f5f7fb;
+        color: #111827;
+        font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+      }
+      .shell {
+        padding: 14px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #dbe2ea;
+        border-radius: 14px;
+        padding: 12px;
+        margin-bottom: 12px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+      }
+      h1, h2 {
+        margin: 0 0 10px;
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        gap: 8px;
+      }
+      .grid.two {
+        grid-template-columns: 1fr 1fr;
+      }
+      label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+        color: #4b5563;
+      }
+      input, textarea, select {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 8px 10px;
+        background: #fff;
+      }
+      textarea {
+        min-height: 60px;
+        resize: vertical;
+      }
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .primary {
+        background: #0f172a;
+        color: #fff;
+      }
+      .secondary {
+        background: #e2e8f0;
+        color: #0f172a;
+      }
+      .field-btn {
+        text-align: left;
+      }
+      .field-btn strong {
+        display: block;
+      }
+      .muted {
+        color: #6b7280;
+      }
+      .status {
+        min-height: 18px;
+        font-size: 12px;
+      }
+      .preview {
+        max-height: 220px;
+        overflow: auto;
+        border-radius: 10px;
+        background: #0f172a;
+        color: #e5e7eb;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        white-space: pre-wrap;
+      }
+      .pill {
+        display: inline-block;
+        margin: 0 6px 6px 0;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-size: 11px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="card">
+        <h1>Maxun Visual Selector</h1>
+        <div class="grid">
+          <div>
+            <label for="apiBaseUrl">API Base URL</label>
+            <input id="apiBaseUrl" value="http://localhost:8080/api" />
+          </div>
+          <div class="grid two">
+            <div>
+              <label for="automationId">Automation ID</label>
+              <input id="automationId" placeholder="uuid" />
+            </div>
+            <div>
+              <label for="automationName">Automation Name</label>
+              <input id="automationName" placeholder="Jobs scraper" />
+            </div>
+          </div>
+          <div>
+            <label for="startUrl">Start URL</label>
+            <input id="startUrl" placeholder="https://example.com/jobs" />
+          </div>
+          <div>
+            <label for="webhookUrl">Webhook URL</label>
+            <input id="webhookUrl" placeholder="https://n8n.example/webhook/..." />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Field Selection</h2>
+        <div class="grid two">
+          <button class="field-btn secondary" data-field="title"><strong>Title</strong><span class="muted">Select text field</span></button>
+          <button class="field-btn secondary" data-field="price"><strong>Price</strong><span class="muted">Select value field</span></button>
+          <button class="field-btn secondary" data-field="link"><strong>Link</strong><span class="muted">Select anchor or card</span></button>
+          <button class="field-btn secondary" data-field="image"><strong>Image</strong><span class="muted">Select image</span></button>
+        </div>
+        <div style="margin-top: 10px;" class="grid two">
+          <button id="stopSelection" class="secondary">Stop</button>
+          <button id="clearSelection" class="secondary">Clear</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Detected Config</h2>
+        <div id="chips"></div>
+        <div class="grid">
+          <div>
+            <label>List Selector</label>
+            <textarea id="listSelector" readonly></textarea>
+          </div>
+          <div>
+            <label>Pagination</label>
+            <input id="paginationSummary" readonly />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Preview</h2>
+        <div id="preview" class="preview">[]</div>
+      </div>
+
+      <div class="card">
+        <button id="saveConfig" class="primary" style="width:100%;">Send To Maxun</button>
+        <div id="status" class="status muted" style="margin-top:8px;"></div>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node:*)",
+      "Bash(netstat -ano)",
+      "Bash(curl -s http://localhost:8080/auth/google)",
+      "Bash(curl -s http://localhost:8080/api/auth/google)",
+      "Bash(curl -s http://localhost:8080/api/v1/auth/register)",
+      "Bash(curl -s http://localhost:8080/api/v1/auth/login)",
+      "Bash(curl:*)",
+      "Bash(PGPASSWORD=mxn_db_7f3c2a91b84d psql:*)",
+      "Bash(grep -l \"tz\" /c/Users/user/Downloads/maxun-develop/maxun-develop/node_modules/bullmq/dist/cjs/classes/*.js)",
+      "Bash(grep -rn \"tz\" /c/Users/user/Downloads/maxun-develop/maxun-develop/node_modules/bullmq/dist/typings/interfaces/*.d.ts)",
+      "Bash(grep -l \"hrtime\\\\|process\\\\.\" /c/Users/user/Downloads/maxun-develop/maxun-develop/node_modules/cron-parser/lib/*.js)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Maxun Visual Selector",
+  "version": "0.1.0",
+  "description": "Visually select repeating elements and fields, preview extracted data, and push list extraction config to Maxun.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Maxun Visual Selector",
+    "default_popup": "popup.html"
+  }
+}

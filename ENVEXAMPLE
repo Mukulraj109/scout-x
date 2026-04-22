@@ -1,0 +1,73 @@
+# App Setup
+NODE_ENV=production                     # Set to 'development' or 'production' as required
+JWT_SECRET=a9Z$kLq7^f03GzNw!bP9dH4xV6sT2yXl3O8vR@uYq3          # Replace with a secure JWT secret key
+ENCRYPTION_KEY=f4d5e6a7b8c9d0e1f23456789abcdef01234567890abcdef123456789abcdef0      # Key for encrypting sensitive data (passwords and proxies)
+SESSION_SECRET=maxun_session # A strong, random string used to sign session cookies. Recommended to define your own session secret to avoid session hijacking.
+
+# MongoDB (required): Mongoose models, Agenda job queue (agendaJobs collection), express-session store, Socket.IO session data.
+# Use MongoDB Atlas in production: create a cluster → Connect → Drivers → copy URI.
+# Whitelist your server IP (or 0.0.0.0/0 for testing) under Network Access.
+# Example: MONGODB_URI=mongodb+srv://USER:PASS@cluster0.xxxxx.mongodb.net/maxun?retryWrites=true&w=majority
+MONGODB_URI=mongodb://localhost:27017/maxun
+
+# Optional Firebase Storage (run screenshots / binary artifacts). Omit all of these to run without cloud object storage.
+# 1) Create a Firebase project, enable Storage, create a service account with Storage access and download JSON.
+# 2) Set GOOGLE_APPLICATION_CREDENTIALS to the absolute path of that JSON file.
+# ENABLE_FIREBASE_STORAGE=false explicitly disables uploads even if credentials are set.
+# ENABLE_FIREBASE_STORAGE=
+# GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/serviceAccount.json
+# FIREBASE_STORAGE_BUCKET=your-project-id.appspot.com
+# FIREBASE_PROJECT_ID=your-project-id
+REDIS_HOST=127.0.0.1                    # Redis host (optional for many deployments; see docs/production-deployment.md)
+REDIS_PORT=6379                         # Redis port (default: 6379)
+REDIS_PASSWORD=redis_password           # Redis password (This is optional. Needed to authenticate with a password-protected Redis instance; if not set, Redis will connect without authentication.)
+REDIS_DB=0                              # Redis DB index if you use Redis
+REDIS_EXTERNAL_PORT=6380                # Host port mapping for Redis
+
+# Backend and Frontend URLs and Ports
+BACKEND_PORT=8080                       # Port for the API server
+FRONTEND_PORT=5173                      # Port for the Vite dev server (production usually serves static files separately)
+BACKEND_EXTERNAL_PORT=8081              # Host port mapping for backend API
+FRONTEND_EXTERNAL_PORT=5174             # Host port mapping for frontend/nginx
+BACKEND_URL=http://localhost:8081       # URL on which the backend runs. You can change it based on your needs. 
+PUBLIC_URL=http://localhost:5174        # URL on which the frontend runs. You can change it based on your needs. 
+VITE_BACKEND_URL=http://localhost:8081  # URL used by frontend to connect to backend. It should always have the same value as BACKEND_URL
+VITE_PUBLIC_URL=http://localhost:5174   # URL used by backend to connect to frontend. It should always have the same value as PUBLIC_URL
+LOGS_PATH=server/logs                   # Directory for Winston log files (use an absolute path in production)
+RUN_EMBEDDED_WORKERS=false              # false = run `npm run worker` as a separate process
+SCRAPER_WORKER_CONCURRENCY=3            # Concurrent scraper jobs per worker process
+SCRAPER_JOB_TIMEOUT_MS=120000           # Per-run timeout for queued scraper executions
+
+# Optional Google OAuth settings for Google Sheet Integration
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GOOGLE_REDIRECT_URI=your_google_redirect_uri
+
+# Optional Airtable OAuth settings for Airtable Integration
+
+AIRTABLE_CLIENT_ID=your_airtable_client_id
+AIRTABLE_REDIRECT_URI=http://localhost:8081/auth/airtable/callback
+
+# Telemetry Settings - Please keep it enabled. Keeping it enabled helps us understand how the product is used and assess the impact of any new changes. 
+MAXUN_TELEMETRY=true
+
+# Remote Playwright browser service (Chromium + stealth). Use 127.0.0.1 when running npm run browser:service on the same machine. See docs/native-browser-setup.md.
+BROWSER_WS_PORT=3001
+BROWSER_HEALTH_PORT=3002
+BROWSER_WS_HOST=127.0.0.1
+BROWSER_WS_EXTERNAL_PORT=3001
+BROWSER_HEALTH_EXTERNAL_PORT=3002
+
+# Optional Camoufox (Firefox anti-detect). Set DEFAULT_BROWSER_TYPE=camoufox to use. Set CAMOUFOX_WS_HOST=127.0.0.1 when running the sidecar locally. See docs/native-browser-setup.md.
+# DEFAULT_BROWSER_TYPE=playwright
+# CAMOUFOX_WS_HOST=127.0.0.1
+# CAMOUFOX_WS_PORT=3003
+# CAMOUFOX_HEALTH_PORT=3004
+# CAMOUFOX_PROXY_SERVER=
+# CAMOUFOX_PROXY_USERNAME=
+# CAMOUFOX_PROXY_PASSWORD=
+
+# Optional AI extraction settings
+# Optional proxy rotation settings for scraper runs
+DEFAULT_PROXY_URL=
+PROXY_POOL=

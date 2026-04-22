@@ -1,0 +1,178 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Chip, LinearProgress, Paper, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import { useNavigate, useParams } from 'react-router-dom';
+import { getSaasRun } from '../api/automation';
+import { useGlobalInfoStore } from '../context/globalInfo';
+
+const renderScreenshot = (payload: any) => {
+  if (!payload) return null;
+  if (typeof payload === 'string') {
+    return <img src={payload} alt="run screenshot" style={{ maxWidth: '100%', borderRadius: 8 }} />;
+  }
+  if (payload.data) {
+    return <img src={`data:${payload.mimeType || 'image/png'};base64,${payload.data}`} alt="run screenshot" style={{ maxWidth: '100%', borderRadius: 8 }} />;
+  }
+  return <pre>{JSON.stringify(payload, null, 2)}</pre>;
+};
+
+const ACTIVE_STATUSES = new Set(['running', 'pending', 'queued']);
+
+export const RunDetailsPage = () => {
+  const { id = '' } = useParams();
+  const navigate = useNavigate();
+  const { notify } = useGlobalInfoStore();
+  const [data, setData] = useState<any>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadRun = useCallback(async () => {
+    try {
+      const result = await getSaasRun(id);
+      setData(result);
+      return result;
+    } catch (error: any) {
+      notify('error', error?.response?.data?.error || 'Failed to load run details');
+      return null;
+    }
+  }, [id, notify]);
+
+  // Initial load + polling while run is active
+  useEffect(() => {
+    loadRun().then((result) => {
+      if (result && ACTIVE_STATUSES.has(result.run?.status)) {
+        pollRef.current = setInterval(async () => {
+          const updated = await loadRun();
+          if (updated && !ACTIVE_STATUSES.has(updated.run?.status)) {
+            if (pollRef.current) {
+              clearInterval(pollRef.current);
+              pollRef.current = null;
+            }
+          }
+        }, 3000);
+      }
+    });
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [loadRun]);
+
+  const columns = useMemo(() => {
+    if (!data?.extractedRows?.length) return [];
+    return Array.from(new Set(data.extractedRows.flatMap((row: any) => Object.keys(row.data || {}))));
+  }, [data]);
+
+  if (!data) {
+    return <Box sx={{ p: 4 }}><Typography>Loading run details...</Typography></Box>;
+  }
+
+  return (
+    <Box sx={{ p: 4 }}>
+      <Box sx={{ mb: 2, display: 'flex', justifyContent: 'flex-end' }}>
+        <Button
+          variant="outlined"
+          startIcon={<ArrowBackIcon />}
+          onClick={() => navigate('/dashboard')}
+        >
+          Back to Dashboard
+        </Button>
+      </Box>
+      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={2} mb={3}>
+        <Box>
+          <Typography variant="h4" fontWeight={700}>Run Details</Typography>
+          <Typography variant="body1" color="text.secondary">
+            {data.automation.name} on {data.automation.targetUrl}
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1}>
+          <Button variant="outlined" onClick={() => navigate(`/automation/${data.automation.id}/data`)}>View Data</Button>
+        </Stack>
+      </Stack>
+
+      {ACTIVE_STATUSES.has(data.run.status) && (
+        <LinearProgress sx={{ mb: 2, borderRadius: 1 }} />
+      )}
+
+      <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} mb={3}>
+        <Paper sx={{ p: 2, minWidth: 180 }}>
+          <Typography variant="overline">Status</Typography>
+          <Typography variant="h6"><Chip label={data.run.status} color={data.run.status === 'success' || data.run.status === 'completed' ? 'success' : data.run.status === 'failed' ? 'error' : data.run.status === 'pending' ? 'info' : 'warning'} /></Typography>
+        </Paper>
+        <Paper sx={{ p: 2, minWidth: 180 }}>
+          <Typography variant="overline">Duration</Typography>
+          <Typography variant="h6">{data.durationMs ? `${Math.round(data.durationMs / 1000)}s` : '-'}</Typography>
+        </Paper>
+        <Paper sx={{ p: 2, minWidth: 180 }}>
+          <Typography variant="overline">Rows</Typography>
+          <Typography variant="h6">{data.run.rowsExtracted || 0}</Typography>
+        </Paper>
+      </Stack>
+
+      <Paper sx={{ p: 3, mb: 3 }}>
+        <Typography variant="h6" mb={2}>Extracted Rows</Typography>
+        {!data.extractedRows?.length ? (
+          <Typography variant="body2" color="text.secondary">
+            No row history for this run. That usually means nothing was extracted (0 matches on the page), or data has not been persisted yet.
+            Check <strong>Logs</strong> below and confirm selectors match the live site. Use <strong>View Data</strong> for all stored rows for this automation.
+          </Typography>
+        ) : (
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Source</TableCell>
+                {columns.map((column: string) => (
+                  <TableCell key={column}>{column}</TableCell>
+                ))}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {data.extractedRows.map((row: any) => (
+                <TableRow key={row.id}>
+                  <TableCell>{row.source}</TableCell>
+                  {columns.map((column: string) => (
+                    <TableCell key={column}>
+                      {typeof row.data?.[column] === 'object'
+                        ? JSON.stringify(row.data?.[column])
+                        : String(row.data?.[column] ?? '')}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </Paper>
+
+      <Paper sx={{ p: 3, mb: 3 }}>
+        <Typography variant="h6" mb={2}>Logs</Typography>
+        <Box component="pre" sx={{ whiteSpace: 'pre-wrap', fontSize: 13, m: 0, maxHeight: 320, overflow: 'auto' }}>
+          {(data.logs || []).join('\n') || 'No logs recorded.'}
+        </Box>
+      </Paper>
+
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h6" mb={2}>Screenshots</Typography>
+        {data.run.screenshots?.length ? (
+          <Stack spacing={2}>
+            {data.run.screenshots.map((shot: any) => (
+              <Accordion key={shot.key} defaultExpanded>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography>{shot.key}</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  {renderScreenshot(shot.value)}
+                </AccordionDetails>
+              </Accordion>
+            ))}
+          </Stack>
+        ) : (
+          <Typography color="text.secondary">No screenshots available for this run.</Typography>
+        )}
+      </Paper>
+    </Box>
+  );
+};

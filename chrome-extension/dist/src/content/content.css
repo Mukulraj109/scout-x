@@ -1,0 +1,75 @@
+/* Maxun Web Scraper - Content Script Styles */
+
+#__maxun_overlay {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2147483646;
+  border: 2px solid #ff6b00;
+  background: rgba(255, 107, 0, 0.12);
+  display: none;
+  box-sizing: border-box;
+  transition: all 0.05s ease-out;
+}
+
+#__maxun_badge {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 2147483647;
+  background: #facc15;
+  color: #111;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: none;
+  pointer-events: none;
+  white-space: nowrap;
+  border: 2px solid #111;
+}
+
+#__maxun_badge.__maxun_tooltip {
+  position: fixed !important;
+  top: auto;
+  right: auto;
+  background: #fde047 !important;
+  color: #111 !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+  padding: 8px 14px !important;
+  border-radius: 8px !important;
+  border: 2px solid #111 !important;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35) !important;
+  white-space: nowrap !important;
+  pointer-events: none !important;
+  z-index: 2147483647 !important;
+}
+
+.__maxun_highlight {
+  outline: 2px dashed #ff6b00 !important;
+  outline-offset: 2px !important;
+}
+
+.__maxun_list_highlight {
+  outline: 2px solid #facc15 !important;
+  outline-offset: 1px !important;
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.3) inset !important;
+}
+
+.__maxun_first_pick {
+  outline: 3px solid #ff00c3 !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 1px rgba(255, 0, 195, 0.3) inset !important;
+}
+
+.__maxun_table_highlight {
+  outline: 2px solid #22d3ee !important;
+  outline-offset: 2px !important;
+}
+
+.__maxun_selected {
+  outline: 3px solid #ff00c3 !important;
+  outline-offset: 2px !important;
+}
