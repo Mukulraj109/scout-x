@@ -19,12 +19,23 @@ declare module "express-session" {
 export const router = Router();
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const isCrossOriginDeployment = (() => {
+  try {
+    const publicUrl = process.env.PUBLIC_URL ? new URL(process.env.PUBLIC_URL) : null;
+    const backendUrl = process.env.BACKEND_URL ? new URL(process.env.BACKEND_URL) : null;
+    if (!publicUrl || !backendUrl) return false;
+    return publicUrl.origin !== backendUrl.origin;
+  } catch {
+    return false;
+  }
+})();
+const cookieSameSite = (IS_PRODUCTION && isCrossOriginDeployment ? 'none' : 'lax') as const;
 
 /** JWT session cookie for the web app (`requireSignIn`). */
 const jwtCookieOptions = {
   httpOnly: true,
   secure: IS_PRODUCTION,
-  sameSite: 'lax' as const,
+  sameSite: cookieSameSite,
   path: '/',
 };
 
@@ -33,7 +44,7 @@ const oauthStatusCookieOptions = {
   httpOnly: false,
   maxAge: 60000,
   secure: IS_PRODUCTION,
-  sameSite: 'lax' as const,
+  sameSite: cookieSameSite,
   path: '/',
 };
 

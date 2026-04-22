@@ -46,6 +46,19 @@ const normalizeOrigin = (urlString?: string): string => {
   }
 };
 
+const isCrossOriginDeployment = (() => {
+  try {
+    const publicOrigin = normalizeOrigin(process.env.PUBLIC_URL);
+    const backendOrigin = normalizeOrigin(process.env.BACKEND_URL);
+    return publicOrigin !== backendOrigin;
+  } catch {
+    return false;
+  }
+})();
+const sessionCookieSameSite = (
+  process.env.NODE_ENV === 'production' && isCrossOriginDeployment ? 'none' : 'lax'
+) as const;
+
 const CORS_CONFIG = {
   origin: normalizeOrigin(process.env.PUBLIC_URL),
   credentials: true,
@@ -70,6 +83,7 @@ app.use(
     saveUninitialized: false,
     cookie: {
       secure: process.env.NODE_ENV === 'production',
+      sameSite: sessionCookieSameSite,
       maxAge: 24 * 60 * 60 * 1000,
     }
   })
