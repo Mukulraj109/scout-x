@@ -2,7 +2,9 @@ import axios from "axios";
 import { useState, useContext, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { AuthContext } from "../context/auth";
-import { Box, Typography, TextField, Button, CircularProgress } from "@mui/material";
+import { Box, Typography, TextField, Button, CircularProgress, InputAdornment, IconButton } from "@mui/material";
+import Visibility from "@mui/icons-material/Visibility";
+import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import { useGlobalInfoStore } from "../context/globalInfo";
 import { apiUrl } from "../apiConfig";
 import { useThemeMode } from "../context/theme-provider";
@@ -17,6 +19,7 @@ const Register = () => {
     password: "",
   });
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const { notify } = useGlobalInfoStore();
   const { email, password } = form;
 
@@ -122,11 +125,24 @@ const Register = () => {
           fullWidth
           label={t('register.password')}
           name="password"
-          type="password"
+          type={showPassword ? "text" : "password"}
           value={password}
           onChange={handleChange}
           margin="normal"
           variant="outlined"
+          InputProps={{
+            endAdornment: (
+              <InputAdornment position="end">
+                <IconButton
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  edge="end"
+                >
+                  {showPassword ? <VisibilityOff /> : <Visibility />}
+                </IconButton>
+              </InputAdornment>
+            ),
+          }}
           required
         />
         <Button
