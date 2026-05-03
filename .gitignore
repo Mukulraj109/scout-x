@@ -1,6 +1,5 @@
 # dependencies
-/node_modules
-/browser/node_modules
+node_modules/
 
 # misc
 .DS_Store
@@ -11,6 +10,11 @@
 .env
 
 /.idea
+
+# local / secrets — do not commit
+cookies.txt
+server-restart.err
+server-restart.log
 
 /server/logs
 

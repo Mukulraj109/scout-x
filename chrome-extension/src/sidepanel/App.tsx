@@ -7,6 +7,8 @@ import { ListExtractorTool } from './components/list/ListExtractorTool';
 import { TableExtractorTool } from './components/table/TableExtractorTool';
 import { TextExtractorTool } from './components/text/TextExtractorTool';
 import type { ToolType } from '../shared/types';
+import { configScheduleFromDraft } from '../shared/types';
+import { ExtensionScheduleForm, EXTENSION_SCHEDULE_OPTIONS, isValidCron } from './components/ExtensionScheduleForm';
 
 export function App() {
   const { state, loading } = useExtensionState();
@@ -16,6 +18,7 @@ export function App() {
   const [backendUrlDraft, setBackendUrlDraft] = useState('');
   const [apiKeyDraft, setApiKeyDraft] = useState('');
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [scheduleApplyOk, setScheduleApplyOk] = useState(false);
 
   useEffect(() => {
     if (!loading) {
@@ -41,12 +44,39 @@ export function App() {
     }
   };
 
+  const handleApplyScheduleNow = async () => {
+    const id = state.list.savedAutomation?.id;
+    if (!id) return;
+    const sched = configScheduleFromDraft(state.list.cloudScheduleDraft);
+    if (sched.enabled && sched.cron) {
+      const isPreset = EXTENSION_SCHEDULE_OPTIONS.some(
+        (o) => typeof o.cron === 'string' && o.cron === sched.cron
+      );
+      if (!isPreset && !isValidCron(sched.cron)) {
+        setError('Fix the custom cron expression before applying.');
+        return;
+      }
+    }
+    try {
+      setError(null);
+      await sendMessage(MSG.SET_SCHEDULE, {
+        automationId: id,
+        schedule: configScheduleFromDraft(state.list.cloudScheduleDraft),
+      });
+      setScheduleApplyOk(true);
+      setTimeout(() => setScheduleApplyOk(false), 2000);
+      await sendMessage(MSG.GET_AUTOMATION_STATUS, { automationId: id });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply schedule');
+    }
+  };
+
   const handleSaveSettings = async () => {
     try {
       setError(null);
       const url = backendUrlDraft.trim();
       if (!url) {
-        setError('API base URL is required (e.g. http://localhost:8080/api)');
+        setError('API base URL is required (e.g. https://scoutx-backend.onrender.com/api)');
         return;
       }
       await sendMessage(MSG.SET_EXTENSION_SETTINGS, {
@@ -100,7 +130,7 @@ export function App() {
               style={styles.settingsInput}
               value={backendUrlDraft}
               onChange={(e) => setBackendUrlDraft(e.target.value)}
-              placeholder="http://localhost:8080/api"
+              placeholder="https://scoutx-backend.onrender.com/api"
               autoComplete="off"
             />
           </label>
@@ -124,6 +154,37 @@ export function App() {
           <button type="button" onClick={handleSaveSettings} style={styles.settingsSaveBtn}>
             {settingsSaved ? 'Saved' : 'Save connection'}
           </button>
+
+          {state.activeTool === 'list' && (
+            <>
+              <div style={{ ...styles.settingsTitle, marginTop: 18 }}>List · cloud schedule</div>
+              <p style={styles.settingsHint}>
+                Optional recurring runs on Scout-X. Same draft as in the list tool; applied when you send or via the
+                button below.
+              </p>
+              <ExtensionScheduleForm
+                compact
+                value={state.list.cloudScheduleDraft}
+                onChange={async (d) => {
+                  try {
+                    setError(null);
+                    await sendMessage(MSG.UPDATE_CLOUD_SCHEDULE_DRAFT, { draft: d });
+                  } catch (e) {
+                    setError(e instanceof Error ? e.message : 'Failed to update schedule');
+                  }
+                }}
+              />
+              {state.list.savedAutomation?.id ? (
+                <button type="button" onClick={() => void handleApplyScheduleNow()} style={styles.settingsSecondaryBtn}>
+                  {scheduleApplyOk ? 'Applied' : 'Apply schedule to server now'}
+                </button>
+              ) : (
+                <p style={{ ...styles.settingsHint, marginBottom: 0 }}>
+                  Save an automation from the list tool first to push schedule changes immediately.
+                </p>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -280,6 +341,17 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 12,
     cursor: 'pointer',
     boxShadow: '0 4px 14px rgba(14, 116, 144, 0.35)',
+  },
+  settingsSecondaryBtn: {
+    marginTop: 10,
+    padding: '9px 16px',
+    borderRadius: 10,
+    border: '1px solid rgba(167, 139, 250, 0.45)',
+    background: 'rgba(88, 28, 135, 0.35)',
+    color: '#e9d5ff',
+    fontWeight: 600,
+    fontSize: 12,
+    cursor: 'pointer',
   },
   error: {
     margin: '8px 16px',

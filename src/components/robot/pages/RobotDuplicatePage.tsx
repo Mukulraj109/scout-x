@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { TextField, Box } from "@mui/material";
 import { useGlobalInfoStore } from "../../../context/globalInfo";
 import { duplicateRecording, getStoredRecording } from "../../../api/storage";
-import { useTranslation, Trans } from "react-i18next";
+import { useTranslation } from "react-i18next";
 import { RobotConfigPage } from "./RobotConfigPage";
 import { useNavigate, useLocation } from "react-router-dom";
 
@@ -102,11 +102,10 @@ export const RobotDuplicatePage = ({ handleStart }: RobotDuplicatePageProps) => 
               <span>{t("robot_duplication.descriptions.purpose")}</span>
               <br />
               <span>
-                <Trans
-                  i18nKey="robot_duplication.descriptions.example"
-                  values={{ url1: "producthunt.com/topics/api", url2: "producthunt.com/topics/database" }}
-                  components={[<code key="0" />, <code key="1" />]}
-                />
+                {t("robot_duplication.descriptions.example", {
+                  url1: "producthunt.com/topics/api",
+                  url2: "producthunt.com/topics/database",
+                })}
               </span>
               <br />
               <span>

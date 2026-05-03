@@ -9,16 +9,28 @@ import moment from 'moment-timezone';
 import { createQueuedAutomationRun } from '../services/automationRun';
 import { syncAutomationSchedule, resolveEffectiveScheduleState } from '../services/automationScheduler';
 import {
+  applyColumnOverrides,
   buildDashboardStatus,
+  ColumnOverride,
   computeRunDurationMs,
   enrichRunForSaas,
   extractRowsFromOutput,
   getAutomationConfig,
+  mergeRowContextIntoRowData,
+  ROW_CONTEXT_KEYS,
+  sanitizeRowContextFields,
 } from '../services/automation';
 import { validateAutomationScheduleCron } from '../utils/schedule';
 import { deleteAutomationCascade } from '../services/deleteAutomation';
+import { DEFAULT_JOB_DATABASE_TARGET_COLUMNS } from '../constants/defaultJobDatabaseColumns';
 
 const router = Router();
+
+function normalizeDatabaseTargetColumns(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const list = raw.map((c) => String(c || '').trim()).filter(Boolean);
+  return list;
+}
 
 /**
  * Trivial recording used for robots created via the Chrome extension (or any
@@ -113,6 +125,92 @@ const getRunSortTime = (run?: any): number => {
   return Math.max(parseStoredRunDate(run.finishedAt), parseStoredRunDate(run.startedAt));
 };
 
+const DEFAULT_LIST_LIMIT = 10;
+const MAX_LIST_LIMIT = 100;
+
+const parseListPagination = (req: any) => {
+  const rawPage = parseInt(String(req.query.page ?? '1'), 10);
+  const rawLimit = parseInt(String(req.query.limit ?? String(DEFAULT_LIST_LIMIT)), 10);
+  const page = Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : 1;
+  const limit = Math.min(MAX_LIST_LIMIT, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : DEFAULT_LIST_LIMIT));
+  const skip = (page - 1) * limit;
+  return { page, limit, skip };
+};
+
+/** Mirrors dashboard chips derived from `mapAutomation` schedule output. */
+const robotScheduleSummaryFlags = (robot: any): { active: boolean; paused: boolean } => {
+  const eff = resolveEffectiveScheduleState(robot);
+  const hasInterval = !!(eff.cron || eff.every);
+  const cronStr = (eff.cron || '').trim();
+  const hasEvery = typeof eff.every === 'number' && eff.every > 0;
+  if (!eff.enabled && !hasInterval) {
+    return { active: false, paused: false };
+  }
+  const paused = hasInterval && !eff.enabled;
+  const dashboardPaused = paused || (!!cronStr && !eff.enabled);
+  const active = !!eff.enabled && (!!cronStr || hasEvery);
+  return { active, paused: dashboardPaused };
+};
+
+async function computeAccountRobotSummary(userId: any) {
+  let activeScheduledCount = 0;
+  let pausedScheduleCount = 0;
+  const cursor = Robot.find({ userId }).select('schedule recording_meta').lean().cursor();
+  for await (const robot of cursor) {
+    const { active, paused } = robotScheduleSummaryFlags(robot);
+    if (active) activeScheduledCount += 1;
+    if (paused) pausedScheduleCount += 1;
+  }
+  return { activeScheduledCount, pausedScheduleCount };
+}
+
+/** Latest run per robotMetaId for a bounded id set (aggregation; avoids loading all runs for the account). */
+async function fetchLatestRunPerRobotMetaIds(robotMetaIds: string[]): Promise<Map<string, any>> {
+  const latestRuns = new Map<string, any>();
+  if (robotMetaIds.length === 0) {
+    return latestRuns;
+  }
+
+  const pipeline: any[] = [
+    { $match: { robotMetaId: { $in: robotMetaIds } } },
+    {
+      $addFields: {
+        _sa: {
+          $convert: { input: { $ifNull: ['$startedAt', ''] }, to: 'date', onError: null, onNull: null },
+        },
+        _fa: {
+          $convert: { input: { $ifNull: ['$finishedAt', ''] }, to: 'date', onError: null, onNull: null },
+        },
+      },
+    },
+    {
+      $addFields: {
+        _sortTs: {
+          $max: [{ $ifNull: ['$_sa', new Date(0)] }, { $ifNull: ['$_fa', new Date(0)] }],
+        },
+      },
+    },
+    { $sort: { _sortTs: -1, _id: -1 } },
+    {
+      $group: {
+        _id: '$robotMetaId',
+        run: { $first: '$$ROOT' },
+      },
+    },
+  ];
+
+  const rows = await Run.aggregate(pipeline);
+  for (const row of rows) {
+    const r = row.run;
+    if (!r) continue;
+    delete r._sa;
+    delete r._fa;
+    delete r._sortTs;
+    latestRuns.set(row._id, r);
+  }
+  return latestRuns;
+}
+
 const mapAutomation = async (robot: any, latestRun?: any) => {
   const rowsExtracted = latestRun
     ? await ExtractedData.countDocuments({ runId: latestRun.runId })
@@ -120,6 +218,15 @@ const mapAutomation = async (robot: any, latestRun?: any) => {
 
   const eff = resolveEffectiveScheduleState(robot);
   const hasInterval = !!(eff.cron || eff.every);
+  const rootSch = robot.schedule || {};
+  const nextRunIso =
+    rootSch.nextRunAt != null
+      ? new Date(rootSch.nextRunAt).toISOString()
+      : null;
+  const lastRunIso =
+    rootSch.lastRunAt != null
+      ? new Date(rootSch.lastRunAt).toISOString()
+      : null;
   const schedule =
     eff.enabled || hasInterval
       ? {
@@ -129,6 +236,8 @@ const mapAutomation = async (robot: any, latestRun?: any) => {
           timezone: eff.timezone || 'UTC',
           /** True when cron is stored but triggers are off (paused); use Resume to turn Agenda back on. */
           paused: hasInterval && !eff.enabled,
+          nextRunAt: nextRunIso,
+          lastRunAt: lastRunIso,
         }
       : null;
 
@@ -152,30 +261,34 @@ router.use(requireSignInOrApiKey);
 
 router.get('/dashboard/automations', async (req: any, res: any) => {
   try {
-    const robots = await Robot.find({ userId: req.user.id }).lean();
+    const { page, limit, skip } = parseListPagination(req);
 
-    const robotIds = robots.map((robot: any) => robot.recording_meta.id);
-    const runs = robotIds.length > 0
-      ? await Run.find({ robotMetaId: { $in: robotIds } }).lean()
-      : [];
+    const [summary, total, robots] = await Promise.all([
+      computeAccountRobotSummary(req.user.id),
+      Robot.countDocuments({ userId: req.user.id }),
+      Robot.find({ userId: req.user.id }).sort({ _id: -1 }).skip(skip).limit(limit).lean(),
+    ]);
 
-    // Sort in JS — startedAt is a locale string so SQL string ordering is unreliable
-    const sortedRuns = [...runs].sort((a: any, b: any) => {
-      return getRunSortTime(b) - getRunSortTime(a);
-    });
+    const summaryOut = {
+      totalAutomations: total,
+      activeScheduledCount: summary.activeScheduledCount,
+      pausedScheduleCount: summary.pausedScheduleCount,
+    };
 
-    const latestRuns = new Map<string, any>();
-    sortedRuns.forEach((run: any) => {
-      if (!latestRuns.has(run.robotMetaId)) {
-        latestRuns.set(run.robotMetaId, run);
-      }
-    });
+    const pageIds = robots.map((robot: any) => robot.recording_meta.id);
+    const latestRuns = await fetchLatestRunPerRobotMetaIds(pageIds);
 
     const automations = await Promise.all(
       robots.map((robot: any) => mapAutomation(robot, latestRuns.get(robot.recording_meta.id)))
     );
 
-    res.json({ automations });
+    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
+
+    res.json({
+      automations,
+      pagination: { page, limit, total, totalPages },
+      summary: summaryOut,
+    });
   } catch (error: any) {
     logger.log('error', `Failed to fetch automation dashboard: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch automations' });
@@ -375,6 +488,10 @@ router.post('/automations', async (req: any, res: any) => {
     const createdAt = new Date().toLocaleString();
     const robotMetaId = uuid();
 
+    const incomingDbCols = normalizeDatabaseTargetColumns((config as any)?.databaseTargetColumns);
+    const resolvedDbCols =
+      incomingDbCols !== undefined ? incomingDbCols : [...DEFAULT_JOB_DATABASE_TARGET_COLUMNS];
+
     const robot = await Robot.create({
       id: uuid(),
       userId: req.user.id,
@@ -390,6 +507,7 @@ router.post('/automations', async (req: any, res: any) => {
         saasConfig: {
           ...(config || {}),
           webhookUrl: webhookUrl || config?.webhookUrl || '',
+          databaseTargetColumns: resolvedDbCols,
         },
       },
       recording: Array.isArray(workflow) ? { workflow } : workflow || defaultWorkflow(normalizedStartUrl),
@@ -554,9 +672,26 @@ router.get('/automations/:id/data', async (req: any, res: any) => {
       .limit(limit)
       .lean();
 
-    const columns = Array.from(
-      new Set(rows.flatMap((row: any) => Object.keys(row.data || {})))
-    );
+    const cfg = getAutomationConfig(robot);
+    const overrides = cfg.columnOverrides || {};
+    const rowContextStored = sanitizeRowContextFields(cfg.rowContext);
+    const normalizedTargets = normalizeDatabaseTargetColumns(cfg.databaseTargetColumns);
+    const databaseTargetColumns =
+      normalizedTargets !== undefined ? normalizedTargets : [...DEFAULT_JOB_DATABASE_TARGET_COLUMNS];
+    const transformedRows = rows.map((row: any) => ({
+      id: row.id,
+      runId: row.runId,
+      source: row.source,
+      createdAt: row.createdAt,
+      data: mergeRowContextIntoRowData(applyColumnOverrides(row.data, overrides), cfg.rowContext),
+    }));
+
+    const ctxKeySet = new Set<string>(ROW_CONTEXT_KEYS);
+    const keySet = new Set(transformedRows.flatMap((row) => Object.keys(row.data || {})));
+    ROW_CONTEXT_KEYS.forEach((k) => keySet.add(k));
+    const rest = Array.from(keySet).filter((k) => !ctxKeySet.has(k));
+    rest.sort((a, b) => a.localeCompare(b));
+    const columns = [...ROW_CONTEXT_KEYS, ...rest];
 
     return res.json({
       pagination: {
@@ -566,17 +701,179 @@ router.get('/automations/:id/data', async (req: any, res: any) => {
         totalPages: Math.ceil(total / limit),
       },
       columns,
-      rows: rows.map((row: any) => ({
-        id: row.id,
-        runId: row.runId,
-        source: row.source,
-        createdAt: row.createdAt,
-        data: row.data,
-      })),
+      rows: transformedRows,
+      overrides,
+      rowContext: rowContextStored,
+      databaseTargetColumns,
     });
   } catch (error: any) {
     logger.log('error', `Failed to fetch automation data ${req.params.id}: ${error.message}`);
     return res.status(500).json({ error: 'Failed to fetch automation data' });
+  }
+});
+
+const COLUMN_NAME_LIMIT = 120;
+const COLUMN_NAME_FORBIDDEN = /[,\n\r\t]/;
+
+/**
+ * Return the columns produced by the most recent persisted run for an
+ * automation. We deliberately scope to the latest run rather than aggregating
+ * all-time keys, because users iterate on the extraction config — earlier runs
+ * may have stored columns that no longer exist in the current schema and would
+ * confuse the Edit columns dialog.
+ *
+ * Falls back to all-time keys only when no rows exist for the latest run (rare,
+ * but covers automations whose latest run produced 0 rows).
+ */
+async function collectExtractedColumns(robotMetaId: string): Promise<string[]> {
+  const latestRow: any = await ExtractedData.findOne({ robotMetaId })
+    .sort({ createdAt: -1 })
+    .select({ runId: 1 })
+    .lean();
+
+  const matchStage: any = latestRow?.runId
+    ? { robotMetaId, runId: latestRow.runId }
+    : { robotMetaId };
+
+  const result = await ExtractedData.aggregate([
+    { $match: matchStage },
+    { $project: { kv: { $objectToArray: { $ifNull: ['$data', {}] } } } },
+    { $unwind: '$kv' },
+    { $group: { _id: '$kv.k' } },
+    { $sort: { _id: 1 } },
+  ]);
+  return result.map((row: any) => String(row._id)).filter((name) => name.length > 0);
+}
+
+router.get('/automations/:id/columns', async (req: any, res: any) => {
+  try {
+    const robot: any = await Robot.findOne({
+      userId: req.user.id,
+      'recording_meta.id': req.params.id,
+    }).lean();
+
+    if (!robot) {
+      return res.status(404).json({ error: 'Automation not found' });
+    }
+
+    const overrides: Record<string, ColumnOverride> = getAutomationConfig(robot).columnOverrides || {};
+    const storedKeys = await collectExtractedColumns(req.params.id);
+
+    // Show columns from the latest run plus any saved override original keys
+    // (so a user who renamed/cleared a column still sees the row in the dialog).
+    const union = new Set<string>(storedKeys);
+    Object.keys(overrides).forEach((key) => union.add(key));
+
+    const columns = Array.from(union).sort((a, b) => a.localeCompare(b));
+
+    return res.json({ columns, overrides });
+  } catch (error: any) {
+    logger.log('error', `Failed to fetch columns for ${req.params.id}: ${error.message}`);
+    return res.status(500).json({ error: 'Failed to fetch automation columns' });
+  }
+});
+
+router.put('/automations/:id/columns', async (req: any, res: any) => {
+  try {
+    const robot = await Robot.findOne({
+      userId: req.user.id,
+      'recording_meta.id': req.params.id,
+    });
+
+    if (!robot) {
+      return res.status(404).json({ error: 'Automation not found' });
+    }
+
+    const incoming = (req.body && (req.body as any).overrides) || {};
+    if (typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return res.status(400).json({ error: 'overrides must be an object keyed by original column name' });
+    }
+
+    const sanitized: Record<string, ColumnOverride> = {};
+    const usedTargets = new Map<string, string>(); // target -> source key
+
+    for (const [originalRaw, valueRaw] of Object.entries(incoming as Record<string, any>)) {
+      const original = String(originalRaw || '').trim();
+      if (!original) {
+        return res.status(400).json({ error: 'Column override keys cannot be empty' });
+      }
+      if (original.length > COLUMN_NAME_LIMIT) {
+        return res.status(400).json({ error: `Column name "${original}" exceeds ${COLUMN_NAME_LIMIT} characters` });
+      }
+
+      const entry: ColumnOverride = {};
+      if (valueRaw && typeof valueRaw === 'object') {
+        if (typeof valueRaw.rename === 'string') {
+          const trimmed = valueRaw.rename.trim();
+          if (trimmed.length > 0) {
+            if (trimmed.length > COLUMN_NAME_LIMIT) {
+              return res.status(400).json({ error: `Rename "${trimmed}" exceeds ${COLUMN_NAME_LIMIT} characters` });
+            }
+            if (COLUMN_NAME_FORBIDDEN.test(trimmed)) {
+              return res.status(400).json({ error: `Rename "${trimmed}" cannot contain commas, tabs, or newlines` });
+            }
+            if (trimmed !== original) {
+              entry.rename = trimmed;
+            }
+          }
+        }
+        if (valueRaw.clear === true) {
+          entry.clear = true;
+        }
+        if (valueRaw.omit === true) {
+          entry.omit = true;
+        }
+      }
+
+      if (entry.omit && entry.clear) {
+        return res.status(400).json({
+          error: 'Remove column cannot be combined with clear values; choose one.',
+        });
+      }
+
+      // Drop empty entries so we don't store no-op overrides
+      if (!entry.rename && !entry.clear && !entry.omit) continue;
+
+      if (!entry.omit) {
+        const target = entry.rename || original;
+        const conflict = usedTargets.get(target);
+        if (conflict && conflict !== original) {
+          return res.status(400).json({
+            error: `Two columns cannot map to the same name "${target}" (sources: ${conflict}, ${original})`,
+          });
+        }
+        usedTargets.set(target, original);
+      }
+
+      sanitized[original] = entry;
+    }
+
+    // Persist via $set on dotted paths. recording_meta is Schema.Types.Mixed —
+    // updating with $set guarantees Mongo writes the new override map atomically
+    // without relying on Mongoose's change-detection on Mixed sub-paths (which
+    // can silently miss nested mutations and lead to "the tick disappears after
+    // refresh" bugs).
+    const $set: Record<string, unknown> = {
+      'recording_meta.updatedAt': new Date().toLocaleString(),
+      'recording_meta.saasConfig.columnOverrides': sanitized,
+    };
+
+    if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'rowContext')) {
+      $set['recording_meta.saasConfig.rowContext'] = sanitizeRowContextFields((req.body as any).rowContext);
+    }
+
+    const updated = await Robot.findOneAndUpdate(
+      { _id: robot._id },
+      { $set },
+      { new: true }
+    ).lean();
+
+    const persisted = (updated as any)?.recording_meta?.saasConfig?.columnOverrides || {};
+    const persistedCtx = sanitizeRowContextFields((updated as any)?.recording_meta?.saasConfig?.rowContext);
+    return res.json({ overrides: persisted, rowContext: persistedCtx });
+  } catch (error: any) {
+    logger.log('error', `Failed to update columns for ${req.params.id}: ${error.message}`);
+    return res.status(500).json({ error: 'Failed to update automation columns' });
   }
 });
 
@@ -601,11 +898,14 @@ router.get('/runs/:id', async (req: any, res: any) => {
       .sort({ createdAt: 1 })
       .lean();
 
+    const robotCfg = getAutomationConfig(robot);
+    const overrides = robotCfg.columnOverrides || {};
+
     /** When nothing was persisted (0-row extraction, or rare persistence gaps), still surface output from the run document. */
     let extractedRowsPayload = extractedFromDb.map((row: any) => ({
       id: row.id,
       source: row.source,
-      data: row.data,
+      data: mergeRowContextIntoRowData(applyColumnOverrides(row.data, overrides), robotCfg.rowContext),
       createdAt: row.createdAt,
     }));
 
@@ -615,7 +915,7 @@ router.get('/runs/:id', async (req: any, res: any) => {
       extractedRowsPayload = synthetic.map((row, index) => ({
         id: `from-run-output-${index}`,
         source: row.source,
-        data: row.data,
+        data: mergeRowContextIntoRowData(applyColumnOverrides(row.data, overrides), cfg.rowContext),
         createdAt: null as Date | null,
       }));
     }
@@ -761,19 +1061,73 @@ router.delete('/automations/:id', async (req: any, res: any) => {
 
 router.get('/runs', async (req: any, res: any) => {
   try {
+    const { page, limit, skip } = parseListPagination(req);
     const robots = await Robot.find({ userId: req.user.id }).lean();
     const allowedRobotIds = new Set(robots.map((robot: any) => robot.recording_meta.id));
-    const runs = await Run.find({ robotMetaId: { $in: Array.from(allowedRobotIds) } }).lean();
-    runs.sort((a: any, b: any) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+    const robotMetaIdFilter = req.query.robotMetaId != null ? String(req.query.robotMetaId) : '';
+
+    const match: any =
+      robotMetaIdFilter
+        ? { robotMetaId: robotMetaIdFilter }
+        : { robotMetaId: { $in: Array.from(allowedRobotIds) } };
+
+    if (robotMetaIdFilter && !allowedRobotIds.has(robotMetaIdFilter)) {
+      return res.status(404).json({ error: 'Automation not found' });
+    }
+
+    const pipeline: any[] = [
+      { $match: match },
+      {
+        $addFields: {
+          _sa: {
+            $convert: { input: { $ifNull: ['$startedAt', ''] }, to: 'date', onError: null, onNull: null },
+          },
+          _fa: {
+            $convert: { input: { $ifNull: ['$finishedAt', ''] }, to: 'date', onError: null, onNull: null },
+          },
+        },
+      },
+      {
+        $addFields: {
+          _sortTs: {
+            $max: [{ $ifNull: ['$_sa', new Date(0)] }, { $ifNull: ['$_fa', new Date(0)] }],
+          },
+        },
+      },
+      { $sort: { _sortTs: -1, _id: -1 } },
+      {
+        $facet: {
+          pageRuns: [{ $skip: skip }, { $limit: limit }],
+          totals: [{ $count: 'total' }],
+        },
+      },
+    ];
+
+    const agg = await Run.aggregate(pipeline);
+    const bucket = agg[0] || { pageRuns: [], totals: [] };
+    const total = bucket.totals[0]?.total ?? 0;
+    const totalPages = total === 0 ? 1 : Math.ceil(total / limit);
+
+    const pageRunsRaw = bucket.pageRuns || [];
+    const pageRuns = pageRunsRaw.map((run: any) => {
+      const copy = { ...run };
+      delete copy._sa;
+      delete copy._fa;
+      delete copy._sortTs;
+      return copy;
+    });
 
     const hydratedRuns = await Promise.all(
-      runs.map(async (run: any) => {
+      pageRuns.map(async (run: any) => {
         const robot = robots.find((candidate: any) => candidate.recording_meta.id === run.robotMetaId);
         return enrichRunForSaas(run, robot);
       })
     );
 
-    return res.json({ runs: hydratedRuns });
+    return res.json({
+      runs: hydratedRuns,
+      pagination: { page, limit, total, totalPages },
+    });
   } catch (error: any) {
     logger.log('error', `Failed to fetch runs for SaaS API: ${error.message}`);
     return res.status(500).json({ error: 'Failed to fetch runs' });

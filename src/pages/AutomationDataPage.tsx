@@ -1,8 +1,56 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Box, Button, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TablePagination, TableRow, Typography } from '@mui/material';
-import { useNavigate, useParams } from 'react-router-dom';
-import { getAutomationData } from '../api/automation';
+import {
+  Alert,
+  Box,
+  Button,
+  Checkbox,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
+  FormControl,
+  IconButton,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TablePagination,
+  TableRow,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material';
+import Link from '@mui/material/Link';
+import RestartAltIcon from '@mui/icons-material/RestartAlt';
+import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
+import {
+  ColumnOverride,
+  ColumnOverridesMap,
+  getAutomationData,
+  RowContextFields,
+  updateAutomationColumns,
+} from '../api/automation';
 import { useGlobalInfoStore } from '../context/globalInfo';
+
+const DATA_COLUMN_LABELS: Record<string, string> = {
+  sectorIndustry: 'Sector / industry',
+  f500: 'F500',
+};
+
+const normalizeRowContext = (
+  rc?: RowContextFields | null
+): { sectorIndustry: string; f500: '' | 'yes' | 'no' } => ({
+  sectorIndustry: typeof rc?.sectorIndustry === 'string' ? rc.sectorIndustry : '',
+  f500: rc?.f500 === 'yes' || rc?.f500 === 'no' ? rc.f500 : '',
+});
 
 const downloadBlob = (content: string, filename: string, type: string) => {
   const blob = new Blob([content], { type });
@@ -14,6 +62,101 @@ const downloadBlob = (content: string, filename: string, type: string) => {
   URL.revokeObjectURL(url);
 };
 
+interface DraftEntry {
+  rename: string;
+  clear: boolean;
+  omit: boolean;
+}
+
+const emptyDraftEntry = (): DraftEntry => ({
+  rename: '',
+  clear: false,
+  omit: false,
+});
+
+const buildDraftFromOverrides = (
+  columns: string[],
+  overrides: ColumnOverridesMap
+): Record<string, DraftEntry> => {
+  const draft: Record<string, DraftEntry> = {};
+  columns.forEach((column) => {
+    const override = overrides[column];
+    draft[column] = {
+      rename: override?.rename || '',
+      clear: !!override?.clear,
+      omit: !!override?.omit,
+    };
+  });
+  return draft;
+};
+
+const draftToOverrides = (draft: Record<string, DraftEntry>): ColumnOverridesMap => {
+  const result: ColumnOverridesMap = {};
+  Object.entries(draft).forEach(([original, entry]) => {
+    if (entry.omit) {
+      const trimmedRename = entry.rename.trim();
+      const value: ColumnOverride = { omit: true };
+      if (trimmedRename && trimmedRename !== original) {
+        value.rename = trimmedRename;
+      }
+      result[original] = value;
+      return;
+    }
+    const trimmedRename = entry.rename.trim();
+    const isRename = !!trimmedRename && trimmedRename !== original;
+    if (!isRename && !entry.clear) return;
+    const value: ColumnOverride = {};
+    if (isRename) value.rename = trimmedRename;
+    if (entry.clear) value.clear = true;
+    result[original] = value;
+  });
+  return result;
+};
+
+const validateDraft = (
+  draft: Record<string, DraftEntry>,
+  databaseTargetColumns: string[]
+): string | null => {
+  const strictTargets = databaseTargetColumns.length > 0;
+  const seen = new Map<string, string>();
+  for (const [original, entry] of Object.entries(draft)) {
+    if (entry.omit) {
+      const trimmed = entry.rename.trim();
+      if (trimmed.length > 120) {
+        return `"${trimmed}" is longer than 120 characters`;
+      }
+      if (trimmed && /[,\n\r\t]/.test(trimmed)) {
+        return `"${trimmed}" cannot contain commas, tabs, or newlines`;
+      }
+      if (strictTargets && trimmed && !databaseTargetColumns.includes(trimmed)) {
+        return `Legacy column name "${trimmed}" must be one of your configured database column names, or leave empty.`;
+      }
+      continue;
+    }
+    const trimmed = entry.rename.trim();
+    if (trimmed.length === 0 && !entry.clear) {
+      seen.set(original, original);
+      continue;
+    }
+    if (trimmed.length > 120) {
+      return `"${trimmed}" is longer than 120 characters`;
+    }
+    if (trimmed && /[,\n\r\t]/.test(trimmed)) {
+      return `"${trimmed}" cannot contain commas, tabs, or newlines`;
+    }
+    if (strictTargets && trimmed && !databaseTargetColumns.includes(trimmed)) {
+      return `Pick a database column from the list, or add "${trimmed}" under Scraper Configuration → Database column names.`;
+    }
+    const target = trimmed || original;
+    const prior = seen.get(target);
+    if (prior && prior !== original) {
+      return `Two columns cannot map to the same name "${target}"`;
+    }
+    seen.set(target, original);
+  }
+  return null;
+};
+
 export const AutomationDataPage = () => {
   const { id = '' } = useParams();
   const navigate = useNavigate();
@@ -23,6 +166,41 @@ export const AutomationDataPage = () => {
   const [rows, setRows] = useState<any[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
+  const [overrides, setOverrides] = useState<ColumnOverridesMap>({});
+  const [databaseTargetColumns, setDatabaseTargetColumns] = useState<string[]>([]);
+  const [rowContext, setRowContext] = useState<{ sectorIndustry: string; f500: '' | 'yes' | 'no' }>({
+    sectorIndustry: '',
+    f500: '',
+  });
+
+  const [editOpen, setEditOpen] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [draft, setDraft] = useState<Record<string, DraftEntry>>({});
+  const [editRowContext, setEditRowContext] = useState<{ sectorIndustry: string; f500: '' | 'yes' | 'no' }>({
+    sectorIndustry: '',
+    f500: '',
+  });
+  const [editError, setEditError] = useState<string | null>(null);
+
+  /**
+   * Original (pre-override) column names that the user can edit. We derive
+   * this from the data shown in the table — same source as `columns` — so the
+   * dialog never shows columns the user can't see in the table.
+   *
+   * For each visible (post-override) column, find its source key in the override
+   * map (target === column) and use that. Otherwise the column itself is the
+   * original. Saved override keys are unioned in so cleared/renamed columns
+   * always have a row in the dialog even if they're not in the visible page.
+   */
+  const editableColumns = useMemo(() => {
+    const result = new Set<string>();
+    columns.forEach((column) => {
+      const renameSource = Object.entries(overrides).find(([, value]) => value.rename === column);
+      result.add(renameSource ? renameSource[0] : column);
+    });
+    Object.keys(overrides).forEach((key) => result.add(key));
+    return Array.from(result).sort((a, b) => a.localeCompare(b));
+  }, [columns, overrides]);
 
   const loadData = async () => {
     try {
@@ -30,6 +208,9 @@ export const AutomationDataPage = () => {
       setRows(response.rows);
       setColumns(response.columns);
       setTotal(response.pagination.total);
+      setOverrides(response.overrides || {});
+      setRowContext(normalizeRowContext(response.rowContext));
+      setDatabaseTargetColumns(response.databaseTargetColumns || []);
     } catch (error: any) {
       notify('error', error?.response?.data?.error || 'Failed to load automation data');
     }
@@ -45,7 +226,18 @@ export const AutomationDataPage = () => {
   );
 
   const exportJson = () => {
-    downloadBlob(JSON.stringify(flatRows, null, 2), `automation-${id}-data.json`, 'application/json');
+    const payload = flatRows.map((row) => {
+      const entry: Record<string, unknown> = {
+        runId: row.runId,
+        source: row.source,
+        createdAt: row.createdAt,
+      };
+      columns.forEach((col) => {
+        entry[col] = row[col];
+      });
+      return entry;
+    });
+    downloadBlob(JSON.stringify(payload, null, 2), `automation-${id}-data.json`, 'application/json');
   };
 
   const exportCsv = () => {
@@ -61,17 +253,102 @@ export const AutomationDataPage = () => {
     downloadBlob(content, `automation-${id}-data.csv`, 'text/csv;charset=utf-8;');
   };
 
+  const overrideForVisible = (column: string): { rename?: string; clear?: boolean; original?: string } | null => {
+    // The visible `column` is the post-override name. Walk the map to find a
+    // matching rename target so we can render "renamed from X".
+    const entry = overrides[column];
+    if (entry && !entry.rename) {
+      return { ...entry, original: column };
+    }
+    const renameMatch = Object.entries(overrides).find(([, value]) => value.rename === column);
+    if (renameMatch) {
+      return { ...renameMatch[1], original: renameMatch[0] };
+    }
+    if (entry) {
+      return { ...entry, original: column };
+    }
+    return null;
+  };
+
+  const openEdit = () => {
+    setEditError(null);
+    setDraft(buildDraftFromOverrides(editableColumns, overrides));
+    setEditRowContext({ ...rowContext });
+    setEditOpen(true);
+  };
+
+  const closeEdit = () => {
+    if (savingEdit) return;
+    setEditOpen(false);
+    setEditError(null);
+  };
+
+  const updateDraft = (column: string, patch: Partial<DraftEntry>) => {
+    setDraft((current) => ({
+      ...current,
+      [column]: { ...emptyDraftEntry(), ...current[column], ...patch },
+    }));
+    setEditError(null);
+  };
+
+  const resetColumn = (column: string) => {
+    updateDraft(column, emptyDraftEntry());
+  };
+
+  const saveEdit = async () => {
+    const validationError = validateDraft(draft, databaseTargetColumns);
+    if (validationError) {
+      setEditError(validationError);
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const payload = draftToOverrides(draft);
+      await updateAutomationColumns(id, {
+        overrides: payload,
+        rowContext: {
+          sectorIndustry: editRowContext.sectorIndustry,
+          f500: editRowContext.f500,
+        },
+      });
+      notify(
+        'success',
+        'Column settings saved. Removed columns disappear from this view and are not stored on new runs.'
+      );
+      setEditOpen(false);
+      await loadData();
+    } catch (error: any) {
+      const message = error?.response?.data?.error || 'Failed to save column overrides';
+      setEditError(message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const activeOverrideCount = Object.keys(overrides).length;
+
   return (
     <Box sx={{ p: 4 }}>
-      <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={2} mb={3}>
+      <Stack
+        direction={{ xs: 'column', md: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'flex-start', md: 'center' }}
+        spacing={2}
+        mb={3}
+      >
         <Box>
-          <Typography variant="h4" fontWeight={700}>Extracted Data</Typography>
+          <Typography variant="h4" fontWeight={700}>
+            Extracted Data
+          </Typography>
           <Typography variant="body1" color="text.secondary">
             Dynamic table view over the persisted `extracted_data` rows for this automation.
           </Typography>
         </Box>
         <Stack direction="row" spacing={1}>
           <Button variant="outlined" onClick={() => navigate('/dashboard')}>Back</Button>
+          <Button variant="outlined" onClick={openEdit}>
+            Edit columns{activeOverrideCount > 0 ? ` (${activeOverrideCount})` : ''}
+          </Button>
           <Button variant="outlined" onClick={exportCsv}>Export CSV</Button>
           <Button variant="contained" onClick={exportJson}>Export JSON</Button>
         </Stack>
@@ -84,16 +361,36 @@ export const AutomationDataPage = () => {
               <TableCell>Run</TableCell>
               <TableCell>Source</TableCell>
               <TableCell>Created</TableCell>
-              {columns.map((column) => (
-                <TableCell key={column}>{column}</TableCell>
-              ))}
+              {columns.map((column) => {
+                const meta = overrideForVisible(column);
+                const headerLabel = DATA_COLUMN_LABELS[column] ?? column;
+                return (
+                  <TableCell key={column}>
+                    <Stack direction="row" spacing={1} alignItems="center">
+                      <span>{headerLabel}</span>
+                      {meta?.rename && meta.original && meta.original !== column ? (
+                        <Tooltip title={`Renamed from ${meta.original}`}>
+                          <Chip size="small" color="info" variant="outlined" label={`from ${meta.original}`} />
+                        </Tooltip>
+                      ) : null}
+                      {meta?.clear ? (
+                        <Tooltip title="Values for this column will be empty on every new run">
+                          <Chip size="small" color="warning" variant="outlined" label="cleared on next run" />
+                        </Tooltip>
+                      ) : null}
+                    </Stack>
+                  </TableCell>
+                );
+              })}
             </TableRow>
           </TableHead>
           <TableBody>
             {rows.map((row) => (
               <TableRow key={row.id} hover>
                 <TableCell>
-                  <Button size="small" onClick={() => navigate(`/run/${row.runId}`)}>{row.runId.slice(0, 8)}</Button>
+                  <Button size="small" onClick={() => navigate(`/run/${row.runId}`)}>
+                    {row.runId.slice(0, 8)}
+                  </Button>
                 </TableCell>
                 <TableCell>{row.source}</TableCell>
                 <TableCell>{row.createdAt}</TableCell>
@@ -121,6 +418,195 @@ export const AutomationDataPage = () => {
           setPage(0);
         }}
       />
+
+      <Dialog open={editOpen} onClose={closeEdit} fullWidth maxWidth="md">
+        <DialogTitle>Edit columns</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Map each scraped field to a name your warehouse expects. &quot;Clear values&quot; keeps the column but
+            saves empty cells on new runs. &quot;Remove column&quot; drops the field entirely (storage, exports, and
+            integrations). If you remove a column that was previously renamed, pick the old stored name from the list
+            (or leave empty) so legacy rows stay consistent.
+          </Typography>
+
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Application context (added to every row)
+          </Typography>
+          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
+            Use this to tag runs (for example healthcare vs banking). Values appear as columns{' '}
+            <strong>sectorIndustry</strong> and <strong>f500</strong> in the table, exports, and JSON. Leave unset for
+            empty strings.
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}>
+            <TextField
+              label="Sector / industry"
+              placeholder="e.g. Healthcare, Banking"
+              value={editRowContext.sectorIndustry}
+              onChange={(event) =>
+                setEditRowContext((prev) => ({ ...prev, sectorIndustry: event.target.value }))
+              }
+              disabled={savingEdit}
+              fullWidth
+              size="small"
+            />
+            <FormControl size="small" sx={{ minWidth: 200 }} disabled={savingEdit}>
+              <InputLabel id="edit-f500-label">Fortune 500 (F500)</InputLabel>
+              <Select
+                labelId="edit-f500-label"
+                label="Fortune 500 (F500)"
+                value={editRowContext.f500}
+                onChange={(event) =>
+                  setEditRowContext((prev) => ({
+                    ...prev,
+                    f500: event.target.value as '' | 'yes' | 'no',
+                  }))
+                }
+              >
+                <MenuItem value="">
+                  <em>Not set</em>
+                </MenuItem>
+                <MenuItem value="yes">Yes</MenuItem>
+                <MenuItem value="no">No</MenuItem>
+              </Select>
+            </FormControl>
+          </Stack>
+
+          <Divider sx={{ my: 2 }} />
+
+          {editableColumns.length > 0 && databaseTargetColumns.length === 0 ? (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Add your database column names under{' '}
+              <Link component={RouterLink} to={`/automation/${id}/config`}>
+                Scraper Configuration → Database column names
+              </Link>{' '}
+              to map with a dropdown instead of typing free text.
+            </Alert>
+          ) : null}
+
+          {editableColumns.length === 0 ? (
+            <Alert severity="info">
+              No columns to edit yet. Run the automation at least once (and load a page that has data) so columns appear here.
+            </Alert>
+          ) : (
+            <Stack spacing={1.5}>
+              {editError ? <Alert severity="error">{editError}</Alert> : null}
+              {editableColumns.map((column) => {
+                const entry = draft[column] || emptyDraftEntry();
+                const hasOverride =
+                  !!entry.omit ||
+                  !!entry.clear ||
+                  (entry.rename.trim().length > 0 && entry.rename.trim() !== column);
+                const renameTrim = entry.rename.trim();
+                const useTargetDropdown = databaseTargetColumns.length > 0;
+                const orphanLegacy =
+                  useTargetDropdown && renameTrim && !databaseTargetColumns.includes(renameTrim)
+                    ? renameTrim
+                    : '';
+                const selectValue =
+                  !renameTrim || renameTrim === column ? '' : renameTrim;
+                return (
+                  <Stack
+                    key={column}
+                    direction={{ xs: 'column', sm: 'row' }}
+                    spacing={1}
+                    alignItems={{ xs: 'stretch', sm: 'center' }}
+                    sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}
+                  >
+                    <Box sx={{ minWidth: 180 }}>
+                      <Typography variant="overline" color="text.secondary">Original</Typography>
+                      <Typography variant="body2" fontWeight={600} sx={{ wordBreak: 'break-all' }}>
+                        {column}
+                      </Typography>
+                    </Box>
+                    {useTargetDropdown ? (
+                      <FormControl size="small" sx={{ flex: 1, minWidth: 200 }} disabled={savingEdit}>
+                        <InputLabel id={`map-${column}`}>
+                          {entry.omit ? 'Legacy stored name (optional)' : 'Map to database column'}
+                        </InputLabel>
+                        <Select
+                          labelId={`map-${column}`}
+                          label={entry.omit ? 'Legacy stored name (optional)' : 'Map to database column'}
+                          value={selectValue}
+                          onChange={(event) => {
+                            const v = String(event.target.value);
+                            updateDraft(column, { rename: v });
+                          }}
+                        >
+                          <MenuItem value="">
+                            <em>{entry.omit ? 'None (drop original key only)' : `Keep original (${column})`}</em>
+                          </MenuItem>
+                          {orphanLegacy ? (
+                            <MenuItem value={orphanLegacy}>
+                              {orphanLegacy} (current mapping — add to config or pick another)
+                            </MenuItem>
+                          ) : null}
+                          {databaseTargetColumns.map((name) => (
+                            <MenuItem key={name} value={name}>
+                              {name}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    ) : (
+                      <TextField
+                        size="small"
+                        label="Rename to"
+                        placeholder={column}
+                        value={entry.rename}
+                        onChange={(event) => updateDraft(column, { rename: event.target.value })}
+                        sx={{ flex: 1, minWidth: 200 }}
+                        disabled={savingEdit}
+                        helperText={entry.omit ? 'Optional: previous target name strips legacy rows' : undefined}
+                      />
+                    )}
+                    <Tooltip title="Keep the column but save empty values on every new run (not for removed columns)">
+                      <Stack direction="row" alignItems="center">
+                        <Checkbox
+                          checked={entry.clear}
+                          onChange={(event) =>
+                            updateDraft(column, event.target.checked ? { clear: true, omit: false } : { clear: false })
+                          }
+                          disabled={savingEdit || entry.omit}
+                        />
+                        <Typography variant="body2">Clear values on next run</Typography>
+                      </Stack>
+                    </Tooltip>
+                    <Tooltip title="Do not store or export this field (integrations and exports too)">
+                      <Stack direction="row" alignItems="center">
+                        <Checkbox
+                          checked={entry.omit}
+                          onChange={(event) =>
+                            updateDraft(column, event.target.checked ? { omit: true, clear: false } : { omit: false })
+                          }
+                          disabled={savingEdit}
+                        />
+                        <Typography variant="body2">Remove column</Typography>
+                      </Stack>
+                    </Tooltip>
+                    <Tooltip title="Reset to original">
+                      <span>
+                        <IconButton
+                          onClick={() => resetColumn(column)}
+                          disabled={savingEdit || !hasOverride}
+                          size="small"
+                        >
+                          <RestartAltIcon fontSize="small" />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  </Stack>
+                );
+              })}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeEdit} disabled={savingEdit}>Cancel</Button>
+          <Button onClick={saveEdit} variant="contained" disabled={savingEdit}>
+            {savingEdit ? 'Saving…' : 'Save'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

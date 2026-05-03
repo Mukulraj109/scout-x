@@ -97,6 +97,84 @@ export interface AutomationRuntimeConfig {
     enabled?: boolean;
   };
   webhookUrl?: string;
+  /**
+   * Per-automation column overrides applied at insert time and on read.
+   * Keyed by the original column name produced by the recording. Each entry
+   * may rename the key (`rename`), blank its value (`clear`), or drop the
+   * field entirely (`omit`). `clear` and `omit` must not both be true.
+   */
+  columnOverrides?: Record<string, ColumnOverride>;
+  /**
+   * Allowed target attribute names for the Edit columns UI (dropdown mapping).
+   * Set in Scraper Configuration — not auto-read from an external database.
+   */
+  databaseTargetColumns?: string[];
+  /**
+   * Optional labels copied onto every extracted row (healthcare vs banking, Fortune 500, etc.).
+   * Persisted with new runs; omitted keys read back as empty strings.
+   */
+  rowContext?: RowContextFields;
+}
+
+/** Stored under `saasConfig.rowContext`; merged into each row after column overrides. */
+export interface RowContextFields {
+  sectorIndustry?: string;
+  /** Empty string when unset; stored as lowercase `yes` / `no`. */
+  f500?: '' | 'yes' | 'no';
+}
+
+export const ROW_CONTEXT_KEYS = ['sectorIndustry', 'f500'] as const;
+
+/** Normalize config for merging; output suitable for Mongo `rowContext`. */
+export const sanitizeRowContextFields = (input: unknown): RowContextFields => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { sectorIndustry: '', f500: '' };
+  }
+  const raw = input as Record<string, unknown>;
+  const sector =
+    typeof raw.sectorIndustry === 'string' ? raw.sectorIndustry.trim().slice(0, 500) : '';
+  const fRaw = raw.f500;
+  let f500: '' | 'yes' | 'no' = '';
+  if (fRaw === true || fRaw === 'yes' || fRaw === 'Yes') f500 = 'yes';
+  else if (fRaw === false || fRaw === 'no' || fRaw === 'No') f500 = 'no';
+  else if (typeof fRaw === 'string') {
+    const low = fRaw.trim().toLowerCase();
+    if (low === 'yes') f500 = 'yes';
+    else if (low === 'no') f500 = 'no';
+  }
+  return { sectorIndustry: sector, f500 };
+};
+
+/**
+ * Adds sector / industry and F500 onto row data (after overrides). Always sets both keys;
+ * uses empty strings when unset so exports and UI stay consistent.
+ */
+export const mergeRowContextIntoRowData = (
+  data: Record<string, any>,
+  rowContext?: RowContextFields | null
+): Record<string, any> => {
+  const normalized = sanitizeRowContextFields(rowContext ?? {});
+  const f500Display =
+    normalized.f500 === 'yes' ? 'Yes' : normalized.f500 === 'no' ? 'No' : '';
+  return {
+    ...data,
+    sectorIndustry: normalized.sectorIndustry,
+    f500: f500Display,
+  };
+};
+
+/** Single column override entry stored in `saasConfig.columnOverrides`. */
+export interface ColumnOverride {
+  /** Display + storage name to use in place of the original column. */
+  rename?: string;
+  /** When true the column is kept but its value is written as an empty string. */
+  clear?: boolean;
+  /**
+   * When true the field is omitted from stored rows, exports, and destinations.
+   * If `rename` is also set (e.g. after a prior rename), both the original key
+   * and that name are stripped so legacy rows stay consistent.
+   */
+  omit?: boolean;
 }
 
 type SerializableOutput = Record<string, any> | null | undefined;
@@ -235,9 +313,71 @@ export const buildDashboardStatus = (run?: any): 'pending' | 'completed' | 'fail
   return 'idle';
 };
 
+/**
+ * Keys removed from row `data` when an override marks the column as omitted.
+ * Includes the original scrape key and, if present, a previous rename target
+ * so legacy persisted rows stay hidden after remove.
+ */
+export const collectOmitKeys = (overrides: Record<string, ColumnOverride>): Set<string> => {
+  const omitKeys = new Set<string>();
+  for (const [original, override] of Object.entries(overrides)) {
+    if (!override?.omit) continue;
+    omitKeys.add(original);
+    const r = override.rename?.trim();
+    if (r) omitKeys.add(r);
+  }
+  return omitKeys;
+};
+
+/**
+ * Single source of truth for the column-override behaviour. Used at insert time
+ * (so future runs persist with the renamed/cleared shape) and on read (so old
+ * rows render consistently in View Data, Run Details, exports). Returns a new
+ * object; never mutates the caller's `data`.
+ */
+export const applyColumnOverrides = (
+  data: Record<string, any> | null | undefined,
+  overrides?: Record<string, ColumnOverride>
+): Record<string, any> => {
+  if (!data || typeof data !== 'object') return {};
+  if (!overrides || Object.keys(overrides).length === 0) {
+    return { ...data };
+  }
+
+  const omitKeys = collectOmitKeys(overrides);
+
+  const out: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (omitKeys.has(key)) {
+      continue;
+    }
+    const override = overrides[key];
+    if (!override) {
+      out[key] = value;
+      continue;
+    }
+    if (override.omit) {
+      continue;
+    }
+    const targetKey = (override.rename && override.rename.trim()) || key;
+    out[targetKey] = override.clear ? '' : value;
+  }
+  return out;
+};
+
 export const persistExtractedDataForRun = async (run: IRun | any, robot: IRobot | any): Promise<ExtractedRow[]> => {
   const config = getAutomationConfig(robot);
-  const rows = extractRowsFromOutput(run.serializableOutput, config);
+  const extracted = extractRowsFromOutput(run.serializableOutput, config);
+
+  // Transform once; both the persisted documents and the rows handed to
+  // destinations (webhook / Sheets / Airtable / DB) get the override shape.
+  const rows = extracted.map((row) => ({
+    source: row.source,
+    data: mergeRowContextIntoRowData(
+      applyColumnOverrides(row.data, config.columnOverrides),
+      config.rowContext
+    ),
+  }));
 
   await ExtractedData.deleteMany({ runId: run.runId });
 

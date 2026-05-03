@@ -15,6 +15,7 @@ import {
   TableCell,
   TableContainer,
   TableHead,
+  TablePagination,
   TableRow,
   TextField,
   Typography,
@@ -31,6 +32,7 @@ import {
   stopAllAutomationSchedules,
   resumeAllAutomationSchedules,
   AutomationSummary,
+  DashboardAutomationsSummary,
 } from '../api/automation';
 import { useGlobalInfoStore } from '../context/globalInfo';
 import { useSocketStore } from '../context/socket';
@@ -63,6 +65,10 @@ export const DashboardPage = () => {
   const { notify } = useGlobalInfoStore();
   const { queueSocket } = useSocketStore();
   const [automations, setAutomations] = useState<AutomationSummary[]>([]);
+  const [summary, setSummary] = useState<DashboardAutomationsSummary | null>(null);
+  const [totalCount, setTotalCount] = useState(0);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [hasBackgroundUpdates, setHasBackgroundUpdates] = useState(false);
@@ -109,15 +115,8 @@ export const DashboardPage = () => {
     }
   }, []);
 
-  const activeScheduledCount = useMemo(
-    () => automations.filter((a) => a.schedule?.enabled && (a.schedule?.cron || (a.schedule as any)?.every)).length,
-    [automations]
-  );
-  const pausedScheduleCount = useMemo(() => {
-    const isPaused = (a: AutomationSummary) =>
-      !!a.schedule?.paused || (!!a.schedule?.cron && !a.schedule?.enabled);
-    return automations.filter(isPaused).length;
-  }, [automations]);
+  const activeScheduledCount = summary?.activeScheduledCount ?? 0;
+  const pausedScheduleCount = summary?.pausedScheduleCount ?? 0;
 
   const buildAutomationSnapshot = useCallback((rows: AutomationSummary[]) => {
     return rows
@@ -136,34 +135,62 @@ export const DashboardPage = () => {
       .join('||');
   }, []);
 
+  const buildDashboardListSignature = useCallback(
+    (payload: { summary: DashboardAutomationsSummary; total: number; rows: AutomationSummary[] }) =>
+      [JSON.stringify(payload.summary), String(payload.total), buildAutomationSnapshot(payload.rows)].join('||'),
+    [buildAutomationSnapshot]
+  );
+
   const latestSnapshotRef = useRef<string>('');
 
-  const loadAutomations = useCallback(async (options?: { silent?: boolean }) => {
-    const silent = !!options?.silent;
-    if (silent) {
-      setIsRefreshing(true);
-    } else {
-      setIsLoading(true);
-    }
-    try {
-      const data = await getDashboardAutomations();
-      setAutomations(data);
-      latestSnapshotRef.current = buildAutomationSnapshot(data);
-      setHasBackgroundUpdates(false);
-    } catch (error: any) {
-      notify('error', error?.response?.data?.error || 'Failed to load automations');
-    } finally {
+  const loadAutomations = useCallback(
+    async (options?: { silent?: boolean; page?: number; limit?: number }) => {
+      const silent = !!options?.silent;
+      const apiPage = options?.page ?? page + 1;
+      const limit = options?.limit ?? rowsPerPage;
       if (silent) {
-        setIsRefreshing(false);
+        setIsRefreshing(true);
       } else {
-        setIsLoading(false);
+        setIsLoading(true);
       }
-    }
-  }, [notify, buildAutomationSnapshot]);
+      try {
+        const data = await getDashboardAutomations({ page: apiPage, limit });
+        setAutomations(data.automations);
+        setSummary(data.summary);
+        setTotalCount(data.pagination.total);
+        latestSnapshotRef.current = buildDashboardListSignature({
+          summary: data.summary,
+          total: data.pagination.total,
+          rows: data.automations,
+        });
+        setHasBackgroundUpdates(false);
+      } catch (error: any) {
+        notify('error', error?.response?.data?.error || 'Failed to load automations');
+      } finally {
+        if (silent) {
+          setIsRefreshing(false);
+        } else {
+          setIsLoading(false);
+        }
+      }
+    },
+    [notify, buildDashboardListSignature, page, rowsPerPage]
+  );
 
   useEffect(() => {
     loadAutomations();
   }, [loadAutomations]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const maxPage = Math.max(0, Math.ceil(totalCount / (rowsPerPage || 1)) - 1);
+    if (totalCount > 0 && page > maxPage) {
+      setPage(maxPage);
+    }
+    if (totalCount === 0 && page !== 0) {
+      setPage(0);
+    }
+  }, [isLoading, totalCount, rowsPerPage, page]);
 
   // Refresh relative countdown every 30s
   useEffect(() => {
@@ -176,10 +203,14 @@ export const DashboardPage = () => {
   useEffect(() => {
     const id = setInterval(() => {
       if (document.hidden || isLoading || isRefreshing) return;
-      getDashboardAutomations()
-        .then((freshData) => {
-          const freshSnapshot = buildAutomationSnapshot(freshData);
-          if (freshSnapshot && freshSnapshot !== latestSnapshotRef.current) {
+      getDashboardAutomations({ page: page + 1, limit: rowsPerPage })
+        .then((fresh) => {
+          const freshSig = buildDashboardListSignature({
+            summary: fresh.summary,
+            total: fresh.pagination.total,
+            rows: fresh.automations,
+          });
+          if (freshSig && freshSig !== latestSnapshotRef.current) {
             setHasBackgroundUpdates(true);
           }
         })
@@ -188,7 +219,7 @@ export const DashboardPage = () => {
         });
     }, 90000);
     return () => clearInterval(id);
-  }, [buildAutomationSnapshot, isLoading, isRefreshing]);
+  }, [buildDashboardListSignature, isLoading, isRefreshing, page, rowsPerPage]);
 
   useEffect(() => {
     if (searchParams.get('extension') === '1' && extensionCardRef.current) {
@@ -429,19 +460,28 @@ export const DashboardPage = () => {
       <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} mb={3}>
         <Paper sx={{ p: 2, minWidth: 180 }}>
           <Typography variant="overline">Automations</Typography>
-          <Typography variant="h5">{automations.length}</Typography>
+          <Typography variant="h5">{summary?.totalAutomations ?? 0}</Typography>
         </Paper>
         <Paper sx={{ p: 2, minWidth: 180 }}>
           <Typography variant="overline">Rows Extracted</Typography>
           <Typography variant="h5">{totals.rows}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            This page only
+          </Typography>
         </Paper>
         <Paper sx={{ p: 2, minWidth: 180 }}>
           <Typography variant="overline">Successful</Typography>
           <Typography variant="h5">{totals.success}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            This page only
+          </Typography>
         </Paper>
         <Paper sx={{ p: 2, minWidth: 180 }}>
           <Typography variant="overline">Failed</Typography>
           <Typography variant="h5">{totals.failed}</Typography>
+          <Typography variant="caption" color="text.secondary" display="block">
+            This page only
+          </Typography>
         </Paper>
         {activeScheduledCount > 0 && (
           <Paper sx={{ p: 2, minWidth: 180, bgcolor: 'primary.main', color: 'primary.contrastText' }}>
@@ -668,6 +708,18 @@ export const DashboardPage = () => {
             ) : null}
           </TableBody>
         </Table>
+        <TablePagination
+          component="div"
+          count={totalCount}
+          page={page}
+          onPageChange={(_, newPage) => setPage(newPage)}
+          rowsPerPage={rowsPerPage}
+          onRowsPerPageChange={(event) => {
+            setRowsPerPage(parseInt(event.target.value, 10));
+            setPage(0);
+          }}
+          rowsPerPageOptions={[10, 25, 50, 100]}
+        />
       </TableContainer>
 
       {/* Create Automation Dialog */}

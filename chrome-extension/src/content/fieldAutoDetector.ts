@@ -688,6 +688,13 @@ export function autoDetectFields(
     addPageCompanyFallback(doc, domFields);
   }
 
+  // Ensure URL is always present for list rows; many boards wrap cards in links
+  // but heuristics can miss it when the anchor text is noisy/long.
+  const hasUrl = domFields.some((f) => f.semanticType === 'url');
+  if (!hasUrl) {
+    addUrlFallback(firstItem, domFields);
+  }
+
   return domFields;
 }
 
@@ -994,6 +1001,49 @@ function addPageCompanyFallback(doc: Document, fields: DetectedField[]): Detecte
     tag: 'div',
   });
 
+  return fields;
+}
+
+/**
+ * Add a best-effort job URL field when semantic URL was not detected.
+ */
+function addUrlFallback(firstItem: Element, fields: DetectedField[]): DetectedField[] {
+  const candidateSelectors = [
+    'h1 a[href]',
+    'h2 a[href]',
+    'h3 a[href]',
+    'a[href*="/job"]',
+    'a[href*="/jobs"]',
+    'a[href]',
+  ];
+
+  for (const selector of candidateSelectors) {
+    const hit = firstItem.querySelector(selector);
+    if (!hit) continue;
+    const href = hit.getAttribute('href') || '';
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) continue;
+
+    const relativeSelector = generateRelativeSelector(hit, firstItem) || selector;
+    fields.push({
+      semanticType: 'url',
+      label: 'url',
+      selector: relativeSelector,
+      attribute: 'href',
+      previewValue: href,
+      tag: hit.tagName.toLowerCase(),
+    });
+    return fields;
+  }
+
+  // Last fallback: allow row-level URL inference in extractor.
+  fields.push({
+    semanticType: 'url',
+    label: 'url',
+    selector: 'a[href]',
+    attribute: 'href',
+    previewValue: '',
+    tag: 'a',
+  });
   return fields;
 }
 

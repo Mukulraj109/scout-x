@@ -18,6 +18,109 @@ interface Field {
 }
 
 export class ClientListExtractor {
+  private static readonly COMPANY_NOISE_PATTERNS = [
+    /why this job is a match/i,
+    /good match/i,
+    /strong match/i,
+    /ask orion/i,
+    /^recommended$/i,
+  ];
+
+  private isNoisyCompanyValue(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return true;
+    return ClientListExtractor.COMPANY_NOISE_PATTERNS.some((pattern) => pattern.test(normalized));
+  }
+
+  private inferCompanyFromContainer(container: Element): string | null {
+    const candidateSelectors = [
+      '[data-testid*="company"]',
+      '[class*="company"]',
+      '[class*="subtitle"]',
+      '[class*="meta"]',
+      'a[href*="/company/"]',
+      'h2 + div',
+      'h3 + div',
+    ];
+
+    for (const selector of candidateSelectors) {
+      for (const node of Array.from(container.querySelectorAll(selector))) {
+        const text = ((node as HTMLElement).innerText || node.textContent || '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!text || this.isNoisyCompanyValue(text)) continue;
+
+        // Common job-card subtitle format: "Company / Industry · Stage"
+        const firstChunk = text.split('·')[0]?.split('/')[0]?.trim() || text;
+        if (firstChunk && !this.isNoisyCompanyValue(firstChunk) && firstChunk.length <= 120) {
+          return firstChunk;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private inferUrlFromContainer(container: Element): string | null {
+    const resolveAbs = (raw: string): string | null => {
+      const value = (raw || '').trim();
+      if (!value) return null;
+      const low = value.toLowerCase();
+      if (low.startsWith('javascript:') || low === '#' || low.startsWith('mailto:') || low.startsWith('tel:')) {
+        return null;
+      }
+      const base = container.ownerDocument?.location?.href || window.location.href;
+      try {
+        return new URL(value, base).href;
+      } catch {
+        return null;
+      }
+    };
+
+    const isLikelyJobUrl = (url: string): boolean => {
+      const low = url.toLowerCase();
+      return (
+        /\/job|\/jobs|jobid|job-id|position|career|opening|vacanc/.test(low) &&
+        !/linkedin\.com\/feed|\/messages|\/settings|\/profile/.test(low)
+      );
+    };
+
+    // 1) Prefer obvious anchors likely to be detail pages.
+    const anchorSelectors = [
+      'a[href*="/job"]',
+      'a[href*="/jobs"]',
+      'a[href*="jobId"]',
+      'a[href*="position"]',
+      'a[aria-label*="Apply"]',
+      'a[aria-label*="View"]',
+      'h2 a[href]',
+      'h3 a[href]',
+      'a[href]',
+    ];
+
+    for (const selector of anchorSelectors) {
+      for (const el of Array.from(container.querySelectorAll(selector))) {
+        const href = resolveAbs((el as HTMLAnchorElement).getAttribute('href') || '');
+        if (href && isLikelyJobUrl(href)) return href;
+      }
+    }
+
+    // 2) Try common data attributes used by card frameworks.
+    const dataUrlAttrs = ['data-href', 'data-url', 'data-link', 'data-job-url', 'data-job-link'];
+    for (const attr of dataUrlAttrs) {
+      const nodes = Array.from(container.querySelectorAll(`[${attr}]`));
+      for (const node of nodes) {
+        const candidate = resolveAbs(node.getAttribute(attr) || '');
+        if (candidate && isLikelyJobUrl(candidate)) return candidate;
+      }
+    }
+
+    // 3) Last resort: use broad picker scorer.
+    const best = this.pickBestUrlFromListRow(container);
+    if (best && isLikelyJobUrl(best)) return best;
+    return best;
+  }
+
   private evaluateXPath(
     rootElement: Element | Document,
     xpath: string
@@ -434,6 +537,29 @@ export class ClientListExtractor {
             record[label] = value !== null && value !== '' ? value : '';
           } else {
             record[label] = '';
+          }
+        }
+
+        // Heuristic correction: some boards return recommendation badge text for company.
+        const companyKey = Object.keys(record).find((key) => /company/i.test(key));
+        if (companyKey) {
+          const rawCompany = (record[companyKey] || '').trim();
+          if (!rawCompany || this.isNoisyCompanyValue(rawCompany)) {
+            const inferredCompany = this.inferCompanyFromContainer(container);
+            if (inferredCompany) {
+              record[companyKey] = inferredCompany;
+            }
+          }
+        }
+
+        const urlKey = Object.keys(record).find((key) => /(url|link)/i.test(key));
+        if (urlKey) {
+          const rawUrl = (record[urlKey] || '').trim();
+          if (!rawUrl) {
+            const inferredUrl = this.inferUrlFromContainer(container);
+            if (inferredUrl) {
+              record[urlKey] = inferredUrl;
+            }
           }
         }
 

@@ -45,6 +45,8 @@ export async function saveConfigToBackend(payload: {
     pauseOnDetect?: boolean;
   };
   previewRows?: Record<string, string>[];
+  /** Recurring schedule stored under `config.schedule` (POST/PUT automations). */
+  schedule?: { enabled: boolean; cron: string | null; timezone: string };
 }): Promise<any> {
   const state = await getState();
   const apiBase = state.backendUrl.replace(/\/+$/, '');
@@ -77,6 +79,7 @@ export async function saveConfigToBackend(payload: {
     config: {
       listExtraction,
       previewRows: payload.previewRows || [],
+      ...(payload.schedule ? { schedule: payload.schedule } : {}),
     },
   };
 
@@ -91,7 +94,7 @@ export async function saveConfigToBackend(payload: {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(parseBackendErrorBody(text) || `Backend request failed: ${response.status}`);
+      throw new Error(formatBackendFailure(response.status, text, 'Save automation'));
     }
     return response.json();
   }
@@ -106,7 +109,7 @@ export async function saveConfigToBackend(payload: {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(parseBackendErrorBody(text) || `Backend request failed: ${response.status}`);
+    throw new Error(formatBackendFailure(response.status, text, 'Save automation'));
   }
   return response.json();
 }
@@ -125,7 +128,8 @@ export async function triggerBackendRun(automationId: string): Promise<any> {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to trigger run: ${response.status}`);
+    const text = await response.text();
+    throw new Error(formatBackendFailure(response.status, text, 'Run automation'));
   }
   return response.json();
 }
@@ -150,7 +154,7 @@ export async function saveScheduleToBackend(
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Failed to save schedule: ${response.status}`);
+    throw new Error(formatBackendFailure(response.status, text, 'Save schedule'));
   }
   return response.json();
 }
@@ -170,7 +174,8 @@ export async function getAutomationStatus(automationId: string): Promise<any> {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to get automation: ${response.status}`);
+    const text = await response.text();
+    throw new Error(formatBackendFailure(response.status, text, 'Get automation'));
   }
   return response.json();
 }
@@ -188,7 +193,8 @@ export async function getRunStatus(runId: string): Promise<any> {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to get run: ${response.status}`);
+    const text = await response.text();
+    throw new Error(formatBackendFailure(response.status, text, 'Get run'));
   }
   return response.json();
 }
@@ -199,10 +205,28 @@ function parseBackendErrorBody(text: string): string {
   try {
     const j = JSON.parse(text);
     if (j?.error && typeof j.error === 'string') return j.error;
+    if (j?.message && typeof j.message === 'string') return j.message;
   } catch {
     /* raw message */
   }
   return text || '';
+}
+
+/** User-visible message; adds auth hints for common extension failures. */
+function formatBackendFailure(status: number, bodyText: string, context: string): string {
+  const parsed = parseBackendErrorBody(bodyText).trim();
+  const base = parsed || `${context} failed (HTTP ${status})`;
+  if (status === 401) {
+    return (
+      `${base}. Add your API key: extension ⚙ → API key (from Dashboard → API key). ` +
+      `API base URL must end with /api (e.g. http://localhost:8080/api). ` +
+      `Logging into the web app alone does not authenticate the extension.`
+    );
+  }
+  if (status === 403 && /invalid api key/i.test(parsed)) {
+    return `${base}. Create or copy a new key on the dashboard and update extension settings.`;
+  }
+  return base;
 }
 
 function buildFieldMap(fields: Record<string, { selector: string; attribute: string }>): Record<string, string> {

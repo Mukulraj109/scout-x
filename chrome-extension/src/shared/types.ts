@@ -24,6 +24,57 @@ export type ListPhase =
   | 'extracting'
   | 'complete';
 
+/** Draft for recurring cloud runs; persisted with list state until sent or synced from server. */
+export interface CloudScheduleDraft {
+  enabled: boolean;
+  cron: string | null;
+  timezone: string;
+}
+
+export function defaultCloudScheduleDraft(): CloudScheduleDraft {
+  return {
+    enabled: false,
+    cron: null,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  };
+}
+
+/** Shape expected under `config.schedule` on POST/PUT automations. */
+export function configScheduleFromDraft(draft: CloudScheduleDraft): {
+  enabled: boolean;
+  cron: string | null;
+  timezone: string;
+} {
+  const tz = (draft.timezone && draft.timezone.trim()) || 'UTC';
+  const cronTrim = draft.cron?.trim() || null;
+  const enabled = !!cronTrim && draft.enabled;
+  return {
+    enabled,
+    cron: enabled ? cronTrim : null,
+    timezone: tz,
+  };
+}
+
+/** Build a draft from GET /automations schedule (dashboard shape). */
+export function cloudScheduleDraftFromApiSchedule(s: any | null | undefined): CloudScheduleDraft | null {
+  if (!s || typeof s !== 'object') return null;
+  const cron =
+    typeof s.cron === 'string' && s.cron.trim()
+      ? s.cron.trim()
+      : null;
+  const tz = typeof s.timezone === 'string' && s.timezone.trim() ? s.timezone.trim() : 'UTC';
+  const paused = !!s.paused;
+  const enabledOnServer = !!s.enabled && !paused;
+  if (!cron && !paused && !enabledOnServer) {
+    return { enabled: false, cron: null, timezone: tz };
+  }
+  return {
+    enabled: !!(cron && enabledOnServer),
+    cron: paused ? null : cron,
+    timezone: tz,
+  };
+}
+
 export interface ListExtractionState {
   phase: ListPhase;
   listSelector: string;
@@ -45,6 +96,8 @@ export interface ListExtractionState {
   scrollLoading?: boolean;
   /** Persisted automation metadata so subsequent saves update instead of duplicating. */
   savedAutomation?: SavedAutomationInfo;
+  /** Optional recurring schedule applied on next Send to Scout-X (and editable in settings). */
+  cloudScheduleDraft: CloudScheduleDraft;
 }
 
 export interface SavedAutomationInfo {
@@ -58,6 +111,8 @@ export interface SavedAutomationInfo {
   nextRunAt?: string | null;
   /** Whether a recurring schedule is enabled. */
   scheduleEnabled?: boolean;
+  /** True when cron exists but Agenda triggers are paused. */
+  schedulePaused?: boolean;
   /** Currently saved cron expression (if any). */
   cron?: string | null;
   /** Schedule timezone. */
@@ -154,7 +209,7 @@ export function buildEmptyState(): ExtensionState {
   return {
     activeTool: 'none',
     activeTabId: null,
-    backendUrl: 'http://localhost:8080/api',
+    backendUrl: 'https://scoutx-backend.onrender.com/api',
     apiKey: '',
     list: {
       phase: 'idle',
@@ -173,6 +228,7 @@ export function buildEmptyState(): ExtensionState {
       extractedRows: [],
       currentPage: 0,
       maxPages: 10,
+      cloudScheduleDraft: defaultCloudScheduleDraft(),
     },
     table: {
       phase: 'idle',

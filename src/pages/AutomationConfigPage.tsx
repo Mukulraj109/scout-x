@@ -5,6 +5,32 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { getAutomation, updateAutomationConfig } from '../api/automation';
 import { useGlobalInfoStore } from '../context/globalInfo';
 import { SCHEDULE_OPTIONS } from '../constants/scheduleOptions';
+import { DEFAULT_JOB_DATABASE_TARGET_COLUMNS } from '../constants/defaultJobDatabaseColumns';
+
+const DB_TARGET_COL_MAX = 100;
+const DB_TARGET_NAME_MAX = 120;
+const DB_TARGET_FORBIDDEN = /[,\n\r\t]/;
+
+function parseDatabaseTargetColumnsInput(text: string): { ok: true; list: string[] } | { ok: false; error: string } {
+  const raw = text.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const list: string[] = [];
+  for (const s of raw) {
+    if (s.length > DB_TARGET_NAME_MAX) {
+      return { ok: false, error: `Each column name must be at most ${DB_TARGET_NAME_MAX} characters.` };
+    }
+    if (DB_TARGET_FORBIDDEN.test(s)) {
+      return { ok: false, error: 'Names cannot contain commas, tabs, or newlines (use one name per line).' };
+    }
+    if (seen.has(s)) continue;
+    seen.add(s);
+    list.push(s);
+    if (list.length > DB_TARGET_COL_MAX) {
+      return { ok: false, error: `At most ${DB_TARGET_COL_MAX} names.` };
+    }
+  }
+  return { ok: true, list };
+}
 
 export const AutomationConfigPage = () => {
   const { id = '' } = useParams();
@@ -13,6 +39,7 @@ export const AutomationConfigPage = () => {
   const [name, setName] = useState('');
   const [startUrl, setStartUrl] = useState('https://');
   const [webhookUrl, setWebhookUrl] = useState('');
+  const [databaseTargetColumnsDraft, setDatabaseTargetColumnsDraft] = useState('');
   const [config, setConfig] = useState<Record<string, any>>({
     schedule: {
       enabled: false,
@@ -119,6 +146,14 @@ export const AutomationConfigPage = () => {
           ...(automation.config || {}),
           schedule: automation.schedule || automation.config?.schedule || current.schedule,
         }));
+        const fromApi = automation.config?.databaseTargetColumns;
+        if (Array.isArray(fromApi)) {
+          setDatabaseTargetColumnsDraft(
+            fromApi.map((c: unknown) => String(c || '').trim()).filter(Boolean).join('\n')
+          );
+        } else {
+          setDatabaseTargetColumnsDraft(DEFAULT_JOB_DATABASE_TARGET_COLUMNS.join('\n'));
+        }
       } catch (error: any) {
         notify('error', error?.response?.data?.error || 'Failed to load automation config');
       }
@@ -141,12 +176,17 @@ export const AutomationConfigPage = () => {
   };
 
   const handleSave = async () => {
+    const parsedTargets = parseDatabaseTargetColumnsInput(databaseTargetColumnsDraft);
+    if (!parsedTargets.ok) {
+      notify('error', parsedTargets.error);
+      return;
+    }
     try {
       await updateAutomationConfig(id, {
         name,
         startUrl: normalizeStartUrl(startUrl),
         webhookUrl,
-        config,
+        config: { ...config, databaseTargetColumns: parsedTargets.list },
       });
       notify('success', 'Automation configuration saved');
       navigate('/dashboard');
@@ -180,6 +220,23 @@ export const AutomationConfigPage = () => {
             onBlur={() => setStartUrl((current) => normalizeStartUrl(current) || current)}
           />
           <TextField label="Webhook URL" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} />
+
+          <Divider />
+          <Typography variant="h6" sx={{ fontWeight: 700 }}>Database column names</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Paste the attribute names your warehouse uses (one per line or comma-separated). Job-focused defaults are
+            pre-filled until you save — edit them to match your schema. On Extracted Data, &quot;Edit columns&quot;
+            uses this list as the mapping dropdown.
+          </Typography>
+          <TextField
+            label="Target columns for mapping"
+            value={databaseTargetColumnsDraft}
+            onChange={(event) => setDatabaseTargetColumnsDraft(event.target.value)}
+            multiline
+            minRows={4}
+            placeholder={'posted_date\njob_url\ncompany_name'}
+            helperText="Example: match your Postgres / BigQuery / API field names exactly. Leave empty to type renames manually in Edit columns."
+          />
 
           <Divider />
           <Typography variant="h6" sx={{ fontWeight: 700 }}>Scheduling</Typography>

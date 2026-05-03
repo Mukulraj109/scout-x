@@ -3,7 +3,7 @@
  * Single writer pattern: only background writes to storage.
  */
 
-import { buildEmptyState, type ExtensionState } from '../shared/types';
+import { buildEmptyState, defaultCloudScheduleDraft, type ExtensionState } from '../shared/types';
 
 const STORAGE_KEY = 'maxunExtensionState';
 
@@ -15,12 +15,16 @@ export async function getState(): Promise<ExtensionState> {
   const raw = result[STORAGE_KEY] as ExtensionState | undefined;
   if (!raw) return buildEmptyState();
   const defaults = buildEmptyState();
+  const listMerged = { ...defaults.list, ...raw.list };
+  if (!raw.list?.cloudScheduleDraft) {
+    listMerged.cloudScheduleDraft = defaultCloudScheduleDraft();
+  }
   return {
     ...defaults,
     ...raw,
     backendUrl: raw.backendUrl?.trim() || defaults.backendUrl,
     apiKey: raw.apiKey ?? defaults.apiKey,
-    list: { ...defaults.list, ...raw.list },
+    list: listMerged,
     table: { ...defaults.table, ...raw.table },
     text: { ...defaults.text, ...raw.text },
   };

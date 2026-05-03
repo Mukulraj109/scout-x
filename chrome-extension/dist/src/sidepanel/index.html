@@ -20,11 +20,32 @@
       }
       #root { width: 100%; min-height: 100vh; }
       @keyframes maxun_spin { to { transform: rotate(360deg); } }
+      /* Narrow side panel: thin scrollbar + gutter so content is not covered */
+      .scoutx-modal-scroll {
+        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        scrollbar-color: #475569 #0c1118;
+        -webkit-overflow-scrolling: touch;
+      }
+      .scoutx-modal-scroll::-webkit-scrollbar {
+        width: 6px;
+      }
+      .scoutx-modal-scroll::-webkit-scrollbar-track {
+        background: #0c1118;
+        border-radius: 999px;
+      }
+      .scoutx-modal-scroll::-webkit-scrollbar-thumb {
+        background: #475569;
+        border-radius: 999px;
+      }
     </style>
-    <script type="module" crossorigin src="/assets/index.html-DJ3Quciq.js"></script>
+    <script type="module" crossorigin src="/assets/index.html-TpQUrVO5.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/client-B9F7oGqJ.js">
-    <link rel="modulepreload" crossorigin href="/assets/messages-D0e9mEno.js">
-    <link rel="modulepreload" crossorigin href="/assets/types-BgzVTqBK.js">
+    <link rel="modulepreload" crossorigin href="/assets/messages-CKPHLiK2.js">
+    <link rel="modulepreload" crossorigin href="/assets/types-BdodPENc.js">
   </head>
   <body>
     <div id="root"></div>

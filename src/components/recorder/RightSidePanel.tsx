@@ -5,7 +5,7 @@ import { WorkflowFile } from "maxun-core";
 import Typography from "@mui/material/Typography";
 import { useGlobalInfoStore } from "../../context/globalInfo";
 import { PaginationType, useActionContext, LimitType } from '../../context/browserActions';
-import { BrowserStep, useBrowserSteps } from '../../context/browserSteps';
+import { BrowserStep, ListStep, useBrowserSteps } from '../../context/browserSteps';
 import { useSocketStore } from '../../context/socket';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import FormControl from '@mui/material/FormControl';
@@ -70,6 +70,7 @@ export const RightSidePanel: React.FC<RightSidePanelProps> = ({ onFinishCapture 
   const { t } = useTranslation();
 
   const isAnyActionActive = activeAction !== 'none';
+  const isListStep = (step: BrowserStep): step is ListStep => step.type === 'list';
 
   const workflowHandler = useCallback((data: WorkflowFile) => {
     setWorkflow(data);
@@ -451,8 +452,8 @@ export const RightSidePanel: React.FC<RightSidePanelProps> = ({ onFinishCapture 
     }
   }, [socket, notify, handleStopGetList, resetInterpretationLog, finishAction, onFinishCapture, t, browserSteps, extractDataClientSide, setCurrentWorkflowActionsState, currentWorkflowActionsState, emitActionForStep, autoDetectedPagination]);
 
-  const getLatestListStep = (steps: BrowserStep[]) => {
-    const listSteps = steps.filter(step => step.type === 'list');
+  const getLatestListStep = (steps: BrowserStep[]): ListStep | null => {
+    const listSteps = steps.filter(isListStep);
     if (listSteps.length === 0) return null;
 
     return listSteps.sort((a, b) => b.id - a.id)[0];
@@ -461,11 +462,12 @@ export const RightSidePanel: React.FC<RightSidePanelProps> = ({ onFinishCapture 
   const handleConfirmListCapture = useCallback(() => {
     switch (captureStage) {
       case 'initial':
-        const hasValidListSelectorForCurrentAction = browserSteps.some(step =>
-          step.type === 'list' &&
-          step.actionId === currentListActionId &&
-          step.listSelector &&
-          Object.keys(step.fields).length > 0
+        const hasValidListSelectorForCurrentAction = browserSteps.some(
+          (step): step is ListStep =>
+            isListStep(step) &&
+            step.actionId === currentListActionId &&
+            !!step.listSelector &&
+            Object.keys(step.fields || {}).length > 0
         );
 
         if (!hasValidListSelectorForCurrentAction) {

@@ -5,6 +5,11 @@
 
 import { MSG } from '../shared/messages';
 import type { ExtensionState } from '../shared/types';
+import {
+  cloudScheduleDraftFromApiSchedule,
+  configScheduleFromDraft,
+  defaultCloudScheduleDraft,
+} from '../shared/types';
 import { getState, updateState, updateListState, updateTableState, updateTextState, resetState, storeExtractedData } from './stateManager';
 import { startExtraction, cancelExtraction, getExtractionStatus, onAutoScrollProgress } from './extractionOrchestrator';
 import {
@@ -158,6 +163,24 @@ async function handleMessage(
       case MSG.UPDATE_PAGINATION: {
         const { pagination } = message.payload || {};
         await updateListState({ pagination });
+        sendResponse({ ok: true });
+        break;
+      }
+
+      case MSG.UPDATE_CLOUD_SCHEDULE_DRAFT: {
+        const draft = message.payload?.draft;
+        if (!draft || typeof draft !== 'object') {
+          sendResponse({ ok: false, error: 'draft is required' });
+          break;
+        }
+        const cur = await getState();
+        const base = cur.list.cloudScheduleDraft ?? defaultCloudScheduleDraft();
+        const nextDraft = {
+          enabled: typeof draft.enabled === 'boolean' ? draft.enabled : base.enabled,
+          cron: draft.cron === undefined ? base.cron : draft.cron,
+          timezone: typeof draft.timezone === 'string' && draft.timezone.trim() ? draft.timezone.trim() : base.timezone,
+        };
+        await updateListState({ cloudScheduleDraft: nextDraft });
         sendResponse({ ok: true });
         break;
       }
@@ -352,21 +375,47 @@ async function handleMessage(
         // Reuse persisted automationId so subsequent saves update instead of
         // creating duplicates. Explicit payload.automationId still wins.
         const persistedId = st.list.savedAutomation?.id;
+        const schedulePayload = configScheduleFromDraft(
+          st.list.cloudScheduleDraft ?? defaultCloudScheduleDraft()
+        );
         const result = await saveConfigToBackend({
           ...message.payload,
           automationId: message.payload?.automationId || persistedId,
           startUrl,
+          schedule: schedulePayload,
         });
         const newId = extractAutomationId(result);
+        const serverSchedule =
+          result?.automation?.schedule ||
+          result?.schedule ||
+          result?.result?.automation?.schedule;
+        const draftFromServer = cloudScheduleDraftFromApiSchedule(serverSchedule);
         if (newId) {
+          let schedulePatch: Record<string, unknown> = {};
+          if (serverSchedule && typeof serverSchedule === 'object') {
+            const sch = serverSchedule;
+            const cronStr = typeof sch.cron === 'string' ? sch.cron.trim() : '';
+            const hasEvery = typeof sch.every === 'number' && sch.every > 0;
+            schedulePatch = {
+              scheduleEnabled: !!(sch.enabled && !sch.paused && (cronStr || hasEvery)),
+              schedulePaused: !!(sch.paused || (cronStr && !sch.enabled)),
+              cron: cronStr || null,
+              timezone: sch.timezone ?? null,
+              nextRunAt: sch.nextRunAt ?? null,
+            };
+          }
           await updateListState({
             savedAutomation: {
               ...(st.list.savedAutomation || { id: newId }),
               id: newId,
               name: result?.automation?.name || st.list.savedAutomation?.name,
               fetchedAt: new Date().toISOString(),
+              ...schedulePatch,
             },
+            ...(draftFromServer ? { cloudScheduleDraft: draftFromServer } : {}),
           });
+        } else if (draftFromServer) {
+          await updateListState({ cloudScheduleDraft: draftFromServer });
         }
         sendResponse({ ok: true, result, automationId: newId });
         break;
@@ -382,16 +431,34 @@ async function handleMessage(
         // Mirror the saved schedule into local state so the UI can show
         // next/last run without another round-trip.
         const current = await getState();
+        const mergedSch = result?.schedule || {};
+        const mergedCron =
+          (typeof mergedSch.cron === 'string' && mergedSch.cron.trim()) ||
+          (typeof schedule?.cron === 'string' && schedule.cron.trim()) ||
+          '';
+        const hasEvery = typeof mergedSch.every === 'number' && mergedSch.every > 0;
+        const draftFromSet = cloudScheduleDraftFromApiSchedule({
+          enabled: !!mergedSch.enabled,
+          cron: mergedCron || mergedSch.cron,
+          timezone: mergedSch.timezone || schedule?.timezone,
+          paused: mergedSch.paused,
+        });
         await updateListState({
           savedAutomation: {
             ...(current.list.savedAutomation || { id: automationId }),
             id: automationId,
-            scheduleEnabled: !!schedule?.enabled,
-            cron: schedule?.cron ?? null,
-            timezone: schedule?.timezone ?? null,
-            nextRunAt: result?.schedule?.nextRunAt || result?.nextRunAt || null,
+            scheduleEnabled: !!(mergedSch.enabled && !mergedSch.paused && (mergedCron || hasEvery)),
+            schedulePaused: !!(mergedSch.paused || (mergedCron && !mergedSch.enabled)),
+            cron: mergedCron || null,
+            timezone: mergedSch.timezone || schedule?.timezone || null,
+            nextRunAt: mergedSch.nextRunAt
+              ? typeof mergedSch.nextRunAt === 'string'
+                ? mergedSch.nextRunAt
+                : new Date(mergedSch.nextRunAt).toISOString()
+              : null,
             fetchedAt: new Date().toISOString(),
           },
+          ...(draftFromSet ? { cloudScheduleDraft: draftFromSet } : {}),
         });
         sendResponse({ ok: true, result });
         break;
@@ -412,28 +479,19 @@ async function handleMessage(
           }
         }
         const persistedId = st.list.savedAutomation?.id;
+        const schedulePayload =
+          message.payload?.schedule ??
+          configScheduleFromDraft(st.list.cloudScheduleDraft ?? defaultCloudScheduleDraft());
         const saveResult = await saveConfigToBackend({
           ...(message.payload?.config || {}),
           automationId: message.payload?.config?.automationId || persistedId,
           startUrl,
+          schedule: schedulePayload,
         });
         const newId = extractAutomationId(saveResult) || persistedId;
         if (!newId) {
           sendResponse({ ok: false, error: 'Failed to create automation' });
           break;
-        }
-
-        let scheduleResult: any = null;
-        const schedule = message.payload?.schedule;
-        if (schedule) {
-          try {
-            scheduleResult = await saveScheduleToBackend(newId, schedule);
-          } catch (err) {
-            // Surface the combined error so the UI can recover.
-            const msg = err instanceof Error ? err.message : String(err);
-            sendResponse({ ok: false, error: `Saved but schedule failed: ${msg}`, automationId: newId });
-            break;
-          }
         }
 
         let status: any = null;
@@ -443,25 +501,40 @@ async function handleMessage(
           /* non-fatal, just skip status sync */
         }
 
+        const serverSchedule =
+          saveResult?.automation?.schedule ||
+          saveResult?.schedule ||
+          status?.automation?.schedule;
+        const draftFromServer = cloudScheduleDraftFromApiSchedule(serverSchedule);
+        const sch = status?.automation?.schedule || serverSchedule;
+        const cronStr = typeof sch?.cron === 'string' ? sch.cron.trim() : '';
+        const hasEvery = typeof sch?.every === 'number' && sch.every > 0;
+        const scheduleEnabled = !!(sch?.enabled && !sch?.paused && (cronStr || hasEvery));
+        const schedulePaused = !!(sch?.paused || (cronStr && !sch?.enabled));
+
         await updateListState({
           savedAutomation: {
             id: newId,
             name: saveResult?.automation?.name || status?.automation?.name,
-            scheduleEnabled: !!schedule?.enabled,
-            cron: schedule?.cron ?? status?.automation?.schedule?.cronExpression ?? null,
-            timezone: schedule?.timezone ?? status?.automation?.schedule?.timezone ?? null,
-            nextRunAt:
-              scheduleResult?.schedule?.nextRunAt ||
-              scheduleResult?.nextRunAt ||
-              status?.automation?.schedule?.nextRunAt ||
-              null,
+            scheduleEnabled,
+            schedulePaused,
+            cron: cronStr || null,
+            timezone: sch?.timezone ?? null,
+            nextRunAt: sch?.nextRunAt ?? null,
             lastRunStatus: status?.automation?.status?.id || null,
             lastRunTime: status?.automation?.lastRunTime || null,
             fetchedAt: new Date().toISOString(),
           },
+          ...(draftFromServer ? { cloudScheduleDraft: draftFromServer } : {}),
         });
 
-        sendResponse({ ok: true, automationId: newId, save: saveResult, schedule: scheduleResult, status });
+        sendResponse({
+          ok: true,
+          automationId: newId,
+          save: saveResult,
+          schedule: serverSchedule,
+          status,
+        });
         break;
       }
 
@@ -476,19 +549,27 @@ async function handleMessage(
         try {
           const status = await getAutomationStatus(id);
           const a = status?.automation || {};
+          const sch = a.schedule;
+          const cronStr = typeof sch?.cron === 'string' ? sch.cron.trim() : '';
+          const hasEvery = typeof sch?.every === 'number' && sch.every > 0;
+          const scheduleEnabled = !!(sch?.enabled && !sch?.paused && (cronStr || hasEvery));
+          const schedulePaused = !!(sch?.paused || (cronStr && !sch?.enabled));
+          const draftFromServer = cloudScheduleDraftFromApiSchedule(sch);
           await updateListState({
             savedAutomation: {
               ...(st.list.savedAutomation || { id }),
               id,
               name: a.name,
-              scheduleEnabled: !!a.schedule?.cronExpression,
-              cron: a.schedule?.cronExpression ?? null,
-              timezone: a.schedule?.timezone ?? null,
-              nextRunAt: a.schedule?.nextRunAt ?? null,
+              scheduleEnabled,
+              schedulePaused,
+              cron: cronStr || null,
+              timezone: sch?.timezone ?? null,
+              nextRunAt: sch?.nextRunAt ?? null,
               lastRunStatus: a.status?.id || null,
               lastRunTime: a.lastRunTime || null,
               fetchedAt: new Date().toISOString(),
             },
+            ...(draftFromServer ? { cloudScheduleDraft: draftFromServer } : {}),
           });
           sendResponse({ ok: true, status });
         } catch (err) {

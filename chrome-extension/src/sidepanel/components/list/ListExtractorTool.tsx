@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { MSG } from '../../../shared/messages';
-import type { ListExtractionState, FieldConfig, SemanticType, PaginationConfig } from '../../../shared/types';
+import type { ListExtractionState, FieldConfig, SemanticType, PaginationConfig, CloudScheduleDraft } from '../../../shared/types';
+import { configScheduleFromDraft } from '../../../shared/types';
+import { ExtensionScheduleForm, EXTENSION_SCHEDULE_OPTIONS, isValidCron } from '../ExtensionScheduleForm';
 import { ExtensionSchedulePicker } from '../ExtensionSchedulePicker';
 
 interface Props {
@@ -30,6 +32,33 @@ const SEMANTIC_ICONS: Record<SemanticType, string> = {
   skills: '🔧', benefits: '🎁', experience: '💼', education: '🎓', industry: '🏢',
   remote: '🏠', currency: '💰',
 };
+
+const SAVE_TO_BACKEND_TIMEOUT_MS = 90_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(
+        new Error(
+          `${label} (${Math.round(ms / 1000)}s). Check API base URL, API key, network, and that the server is running.`
+        )
+      );
+    }, ms);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }) as Promise<T>;
+}
+
+function scheduleSummaryText(draft: ListExtractionState['cloudScheduleDraft']): string {
+  const s = configScheduleFromDraft(draft);
+  if (!s.enabled || !s.cron) return 'Cloud schedule: Off (recurring runs only after you turn one on below)';
+  const label =
+    EXTENSION_SCHEDULE_OPTIONS.find((o) => typeof o.cron === 'string' && o.cron === s.cron)?.label ||
+    `Custom ${s.cron}`;
+  return `Cloud schedule: ${label} · ${s.timezone}`;
+}
 
 const TYPE_COLORS: Record<SemanticType, { bg: string; text: string }> = {
   title:    { bg: '#3b82f622', text: '#93c5fd' },
@@ -147,6 +176,15 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
     return `Scout-X scrape (${new Date().toISOString().slice(0, 16).replace('T', ' ')})`;
   }, []);
 
+  const handleScheduleDraftChange = async (next: CloudScheduleDraft) => {
+    try {
+      setError(null);
+      await sendMessage(MSG.UPDATE_CLOUD_SCHEDULE_DRAFT, { draft: next });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update schedule draft');
+    }
+  };
+
   const openSendToMaxunModal = useCallback(() => {
     const savedName = state.savedAutomation?.name?.trim();
     setSendToMaxunName(
@@ -170,15 +208,30 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
       setSendToMaxunSubmitting(true);
       setSendToMaxunError(null);
       setError(null);
+      const sched = configScheduleFromDraft(state.cloudScheduleDraft);
+      if (sched.enabled && sched.cron) {
+        const isPreset = EXTENSION_SCHEDULE_OPTIONS.some(
+          (o) => typeof o.cron === 'string' && o.cron === sched.cron
+        );
+        if (!isPreset && !isValidCron(sched.cron)) {
+          setSendToMaxunError('Fix the custom cron expression before sending.');
+          setSendToMaxunSubmitting(false);
+          return;
+        }
+      }
       const fieldsToSave = editingField ? editedFields : state.fields;
-      const response = await sendMessage(MSG.SAVE_TO_BACKEND, {
-        automationId: savedBackendAutomationId || undefined,
-        automationName: trimmed,
-        listSelector: state.listSelector,
-        fields: fieldsToSave,
-        pagination: state.pagination,
-        previewRows: state.previewRows,
-      });
+      const response = await withTimeout(
+        sendMessage(MSG.SAVE_TO_BACKEND, {
+          automationId: savedBackendAutomationId || undefined,
+          automationName: trimmed,
+          listSelector: state.listSelector,
+          fields: fieldsToSave,
+          pagination: state.pagination,
+          previewRows: state.previewRows,
+        }),
+        SAVE_TO_BACKEND_TIMEOUT_MS,
+        'Save to Scout-X'
+      );
       setShowSendToMaxunModal(false);
       const automationId =
         response?.automationId ||
@@ -188,11 +241,8 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
         null;
       if (automationId) {
         setLocalAutomationId(automationId);
-        try {
-          await sendMessage(MSG.GET_AUTOMATION_STATUS, { automationId });
-        } catch {
-          /* non-fatal */
-        }
+        // Do not await — a slow/hung status call used to keep "Sending…" forever
+        void sendMessage(MSG.GET_AUTOMATION_STATUS, { automationId }).catch(() => undefined);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to save';
@@ -527,6 +577,13 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
             </div>
           )}
 
+          <div style={{ ...styles.card, marginTop: 8 }}>
+            <ExtensionScheduleForm
+              value={state.cloudScheduleDraft}
+              onChange={(d) => void handleScheduleDraftChange(d)}
+            />
+          </div>
+
           <button onClick={handleStartExtraction} style={{ ...styles.primaryBtn, marginTop: 12, width: '100%' }}>
             Start Extraction
           </button>
@@ -600,6 +657,7 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
 
           <div style={{ ...styles.card, marginTop: 8 }}>
             <h3 style={styles.cardTitle}>Actions</h3>
+            <div style={{ ...styles.muted, fontSize: 11, marginBottom: 10 }}>{scheduleSummaryText(state.cloudScheduleDraft)}</div>
             <div style={styles.btnGrid}>
               <button onClick={handleOpenDataTable} style={styles.primaryBtn}>
                 View Full Data
@@ -621,53 +679,67 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
               style={styles.modalOverlay}
               onClick={() => !sendToMaxunSubmitting && setShowSendToMaxunModal(false)}
             >
-              <div style={{ ...styles.modal, maxWidth: 360 }} onClick={(e) => e.stopPropagation()}>
-                <h3 style={styles.modalTitle}>Send to Scout-X</h3>
-                <p style={{ ...styles.muted, marginTop: 0, marginBottom: 10, lineHeight: 1.45 }}>
-                  Each automation needs a <strong>unique name</strong> on your server. If you already saved this
-                  extraction, the same name updates that automation.
-                </p>
-                <label style={styles.label}>Automation name</label>
-                <input
-                  style={styles.input}
-                  value={sendToMaxunName}
-                  onChange={(e) => setSendToMaxunName(e.target.value)}
-                  disabled={sendToMaxunSubmitting}
-                  maxLength={200}
-                  autoFocus
-                  placeholder="e.g. Amazon Jobs — Bangalore"
-                />
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                  <button
-                    type="button"
-                    onClick={() => setSendToMaxunName(makeUniqueAutomationName())}
+              <div style={styles.sendModalShell} onClick={(e) => e.stopPropagation()}>
+                <div style={styles.sendModalHeader}>
+                  <h3 style={{ ...styles.modalTitle, marginBottom: 8 }}>Send to Scout-X</h3>
+                  <p style={{ ...styles.muted, marginTop: 0, marginBottom: 10, lineHeight: 1.45, fontSize: 12 }}>
+                    Each automation needs a <strong>unique name</strong> on your server. If you already saved this
+                    extraction, the same name updates that automation.
+                  </p>
+                  <label style={styles.label}>Automation name</label>
+                  <input
+                    style={{ ...styles.input, marginBottom: 8 }}
+                    value={sendToMaxunName}
+                    onChange={(e) => setSendToMaxunName(e.target.value)}
                     disabled={sendToMaxunSubmitting}
-                    style={styles.linkBtn}
-                  >
-                    Suggest unique name
-                  </button>
-                  <span style={{ fontSize: 10, color: '#6b7280' }}>{sendToMaxunName.length}/200</span>
+                    maxLength={200}
+                    autoFocus
+                    placeholder="e.g. Amazon Jobs — Bangalore"
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => setSendToMaxunName(makeUniqueAutomationName())}
+                      disabled={sendToMaxunSubmitting}
+                      style={styles.linkBtn}
+                    >
+                      Suggest unique name
+                    </button>
+                    <span style={{ fontSize: 10, color: '#6b7280' }}>{sendToMaxunName.length}/200</span>
+                  </div>
+                  {sendToMaxunError && (
+                    <div style={{ ...styles.error, marginBottom: 0 }}>{sendToMaxunError}</div>
+                  )}
                 </div>
-                {sendToMaxunError && (
-                  <div style={{ ...styles.error, marginBottom: 10 }}>{sendToMaxunError}</div>
-                )}
-                <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                  <button
-                    type="button"
-                    onClick={handleSaveToBackend}
-                    disabled={sendToMaxunSubmitting}
-                    style={{ ...styles.primaryBtn, flex: 1, marginBottom: 0 }}
-                  >
-                    {sendToMaxunSubmitting ? 'Sending…' : 'Send'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => !sendToMaxunSubmitting && setShowSendToMaxunModal(false)}
-                    disabled={sendToMaxunSubmitting}
-                    style={{ ...styles.secondaryBtn, flex: 1, marginBottom: 0 }}
-                  >
-                    Cancel
-                  </button>
+                <div className="scoutx-modal-scroll" style={styles.sendModalScroll}>
+                  <ExtensionScheduleForm
+                    compact
+                    layout="modal"
+                    value={state.cloudScheduleDraft}
+                    onChange={(d) => void handleScheduleDraftChange(d)}
+                  />
+                </div>
+                <div style={styles.sendModalFooter}>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveToBackend()}
+                      disabled={sendToMaxunSubmitting}
+                      style={{ ...styles.primaryBtn, flex: 1, marginBottom: 0 }}
+                    >
+                      {sendToMaxunSubmitting ? 'Sending…' : 'Send'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSendToMaxunSubmitting(false);
+                        setShowSendToMaxunModal(false);
+                      }}
+                      style={{ ...styles.secondaryBtn, flex: 1, marginBottom: 0 }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -683,6 +755,8 @@ export function ListExtractorTool({ state, sendMessage }: Props) {
               <ExtensionSchedulePicker
                 automationId={savedBackendAutomationId}
                 sendMessage={sendMessage}
+                value={state.cloudScheduleDraft}
+                onDraftChange={handleScheduleDraftChange}
               />
             </div>
           )}
@@ -708,7 +782,7 @@ function AutomationStatusPanel({ saved, onRefresh, onRunNow }: AutomationStatusP
     );
   }
 
-  const { lastRunStatus, lastRunTime, nextRunAt, scheduleEnabled, cron, timezone } = saved;
+  const { lastRunStatus, lastRunTime, nextRunAt, scheduleEnabled, schedulePaused, cron, timezone } = saved;
 
   return (
     <div style={statusStyles.wrap}>
@@ -735,12 +809,19 @@ function AutomationStatusPanel({ saved, onRefresh, onRunNow }: AutomationStatusP
         <div style={statusStyles.cell}>
           <div style={statusStyles.cellLabel}>Next run</div>
           <div style={statusStyles.cellValue}>
-            {scheduleEnabled && nextRunAt ? formatRunTime(nextRunAt) : 'Not scheduled'}
+            {schedulePaused && cron
+              ? 'Paused'
+              : scheduleEnabled && nextRunAt
+                ? formatRunTime(nextRunAt)
+                : scheduleEnabled
+                  ? '—'
+                  : 'Not scheduled'}
           </div>
-          {scheduleEnabled && cron && (
+          {(scheduleEnabled || schedulePaused) && cron && (
             <div style={statusStyles.cronChip}>
               {cron}
               {timezone ? ` · ${timezone}` : ''}
+              {schedulePaused ? ' · paused' : ''}
             </div>
           )}
         </div>
@@ -1491,6 +1572,34 @@ const styles: Record<string, React.CSSProperties> = {
   modal: {
     background: '#1a1a1a', border: '1px solid #333', borderRadius: 12,
     padding: 20, width: 320, maxHeight: '80vh', overflowY: 'auto',
+  },
+  sendModalShell: {
+    background: '#111827',
+    border: '1px solid rgba(34, 211, 238, 0.28)',
+    borderRadius: 14,
+    width: 'min(calc(100vw - 20px), 400px)',
+    maxWidth: 400,
+    maxHeight: 'min(88vh, 680px)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    overflow: 'hidden',
+    boxShadow: '0 24px 48px rgba(0,0,0,0.55)',
+  },
+  sendModalHeader: {
+    padding: '14px 16px 10px',
+    flexShrink: 0,
+    borderBottom: '1px solid rgba(30, 41, 59, 0.95)',
+  },
+  sendModalScroll: {
+    flex: '1 1 auto',
+    minHeight: 0,
+    padding: '8px 12px 10px 16px',
+  },
+  sendModalFooter: {
+    padding: '12px 16px 14px',
+    flexShrink: 0,
+    borderTop: '1px solid rgba(30, 41, 59, 0.95)',
+    background: 'rgba(15, 23, 42, 0.72)',
   },
   modalTitle: { fontSize: 15, fontWeight: 700, color: '#f9fafb', marginBottom: 12 },
   input: {

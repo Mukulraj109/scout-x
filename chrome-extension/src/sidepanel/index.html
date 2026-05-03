@@ -20,6 +20,27 @@
       }
       #root { width: 100%; min-height: 100vh; }
       @keyframes maxun_spin { to { transform: rotate(360deg); } }
+      /* Narrow side panel: thin scrollbar + gutter so content is not covered */
+      .scoutx-modal-scroll {
+        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
+        scrollbar-gutter: stable;
+        scrollbar-width: thin;
+        scrollbar-color: #475569 #0c1118;
+        -webkit-overflow-scrolling: touch;
+      }
+      .scoutx-modal-scroll::-webkit-scrollbar {
+        width: 6px;
+      }
+      .scoutx-modal-scroll::-webkit-scrollbar-track {
+        background: #0c1118;
+        border-radius: 999px;
+      }
+      .scoutx-modal-scroll::-webkit-scrollbar-thumb {
+        background: #475569;
+        border-radius: 999px;
+      }
     </style>
   </head>
   <body>

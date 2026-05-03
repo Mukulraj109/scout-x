@@ -3,7 +3,12 @@ import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Chip, Linea
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useNavigate, useParams } from 'react-router-dom';
-import { getSaasRun } from '../api/automation';
+import { AUTOMATION_ROW_CONTEXT_KEYS, getSaasRun } from '../api/automation';
+
+const RUN_DETAIL_COLUMN_LABELS: Record<string, string> = {
+  sectorIndustry: 'Sector / industry',
+  f500: 'F500',
+};
 import { useGlobalInfoStore } from '../context/globalInfo';
 
 const renderScreenshot = (payload: any) => {
@@ -61,9 +66,16 @@ export const RunDetailsPage = () => {
     };
   }, [loadRun]);
 
-  const columns = useMemo(() => {
+  const columns = useMemo<string[]>(() => {
     if (!data?.extractedRows?.length) return [];
-    return Array.from(new Set(data.extractedRows.flatMap((row: any) => Object.keys(row.data || {}))));
+    const keySet = new Set<string>();
+    data.extractedRows.forEach((row: any) => {
+      Object.keys(row.data || {}).forEach((k) => keySet.add(k));
+    });
+    const keys = Array.from(keySet);
+    const ctxSet = new Set<string>(AUTOMATION_ROW_CONTEXT_KEYS);
+    const rest = keys.filter((k) => !ctxSet.has(k)).sort((a, b) => a.localeCompare(b));
+    return [...AUTOMATION_ROW_CONTEXT_KEYS.filter((k) => keys.includes(k)), ...rest];
   }, [data]);
 
   if (!data) {
@@ -125,7 +137,7 @@ export const RunDetailsPage = () => {
               <TableRow>
                 <TableCell>Source</TableCell>
                 {columns.map((column: string) => (
-                  <TableCell key={column}>{column}</TableCell>
+                  <TableCell key={column}>{RUN_DETAIL_COLUMN_LABELS[column] ?? column}</TableCell>
                 ))}
               </TableRow>
             </TableHead>

@@ -56,6 +56,8 @@ export const MSG = {
   RESET_STATE: 'maxun:reset-state',
   SET_EXTENSION_SETTINGS: 'maxun:set-extension-settings',
   SET_SCHEDULE: 'maxun:set-schedule',
+  /** Side panel → background: update persisted list cloud schedule draft. */
+  UPDATE_CLOUD_SCHEDULE_DRAFT: 'maxun:update-cloud-schedule-draft',
   /** Side panel → background: combined save-or-update automation + save-schedule. */
   SEND_AND_SCHEDULE: 'maxun:send-and-schedule',
   /** Side panel → background: fetch backend status (last/next run, schedule) for a saved automation. */
