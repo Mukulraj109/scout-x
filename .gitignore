@@ -16,6 +16,10 @@ cookies.txt
 server-restart.err
 server-restart.log
 
+# test / build artifacts
+test-results/
+chrome-extension/dist.zip
+
 /server/logs
 
 /build
